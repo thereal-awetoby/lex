@@ -1,0 +1,246 @@
+"use client";
+
+import { useState } from "react";
+import { useAccount } from "wagmi";
+import { useMandateRead, useMandateWrite } from "@/hooks/useMandate";
+import { REASON_CODES, ERC20_ABI } from "@lex/sdk";
+import { EXPLORER_URL, TOKENS } from "@/config/contracts";
+import { formatUnits } from "viem";
+
+const DECISION_LABELS = ["ALLOW", "REFUSE", "EXCEPTION"];
+
+export function MandateView() {
+  const [mandateIdInput, setMandateIdInput] = useState("");
+  const [mandateId, setMandateId] = useState<bigint>();
+  const { address } = useAccount();
+  const { data, isLoading, refetch } = useMandateRead(mandateId);
+  const { writeContract, mandateAddress, mandateAbi, isPending, isConfirming, isSuccess, hash } =
+    useMandateWrite();
+
+  const [fundAmount, setFundAmount] = useState("");
+  const [agentAddr, setAgentAddr] = useState("");
+  const [tab, setTab] = useState<"overview" | "agents" | "fund" | "exceptions">("overview");
+
+  const handleLoad = () => {
+    if (mandateIdInput) setMandateId(BigInt(mandateIdInput));
+  };
+
+  if (!mandateId || !data) {
+    return (
+      <div className="space-y-3">
+        <h2 className="text-lg font-medium">View Mandate</h2>
+        <div className="flex gap-2">
+          <input
+            type="number"
+            value={mandateIdInput}
+            onChange={(e) => setMandateIdInput(e.target.value)}
+            placeholder="Mandate ID"
+            className="px-3 py-2 border rounded w-40"
+          />
+          <button onClick={handleLoad} className="px-4 py-2 bg-black text-white rounded">
+            Load
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const [owner, paused, token, balance, policyHash, rules] = data as any;
+  const isOwner = address?.toLowerCase() === owner?.toLowerCase();
+  const tokenSymbol = token?.toLowerCase() === TOKENS.USDC_E.toLowerCase() ? "USDC.e" : "USDT";
+
+  const handleFund = () => {
+    if (!fundAmount || !mandateId) return;
+    const amount = BigInt(Math.floor(Number(fundAmount) * 1e6));
+
+    // Approve first
+    writeContract({
+      address: token,
+      abi: ERC20_ABI,
+      functionName: "approve",
+      args: [mandateAddress, amount],
+    });
+
+    // Then fund (user will need to confirm second tx after first)
+    setTimeout(() => {
+      writeContract({
+        address: mandateAddress,
+        abi: mandateAbi,
+        functionName: "fund",
+        args: [mandateId, amount],
+      });
+    }, 1000);
+  };
+
+  const handleBindAgent = () => {
+    if (!agentAddr || !mandateId) return;
+    writeContract({
+      address: mandateAddress,
+      abi: mandateAbi,
+      functionName: "bindAgent",
+      args: [mandateId, agentAddr as `0x${string}`],
+    });
+  };
+
+  const handlePause = () => {
+    if (!mandateId) return;
+    writeContract({
+      address: mandateAddress,
+      abi: mandateAbi,
+      functionName: paused ? "unpause" : "pause",
+      args: [mandateId],
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-medium">Mandate #{mandateId.toString()}</h2>
+        <div className="flex gap-2">
+          {paused && (
+            <span className="px-2 py-1 bg-red-100 text-red-700 text-xs rounded">PAUSED</span>
+          )}
+          {isOwner && (
+            <button
+              onClick={handlePause}
+              className="px-3 py-1 border rounded text-sm hover:bg-gray-50"
+            >
+              {paused ? "Unpause" : "Pause"}
+            </button>
+          )}
+          <button onClick={() => refetch()} className="px-3 py-1 border rounded text-sm">
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b">
+        {(["overview", "agents", "fund", "exceptions"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-3 py-2 text-sm capitalize ${
+              tab === t ? "border-b-2 border-black font-medium" : "text-gray-500"
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === "overview" && (
+        <div className="space-y-3 text-sm">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <span className="text-gray-500">Owner</span>
+              <p className="font-mono text-xs break-all">{owner}</p>
+            </div>
+            <div>
+              <span className="text-gray-500">Balance</span>
+              <p>
+                {formatUnits(balance, 6)} {tokenSymbol}
+              </p>
+            </div>
+            <div>
+              <span className="text-gray-500">Per-tx cap</span>
+              <p>{formatUnits(rules.perTxCap, 6)}</p>
+            </div>
+            <div>
+              <span className="text-gray-500">Rolling 24h cap</span>
+              <p>{formatUnits(rules.rollingWindowCap, 6)}</p>
+            </div>
+            <div>
+              <span className="text-gray-500">Per-counterparty cap</span>
+              <p>{formatUnits(rules.perCounterpartyCap, 6)}</p>
+            </div>
+            <div>
+              <span className="text-gray-500">Per-category cap</span>
+              <p>{formatUnits(rules.perCategoryCap, 6)}</p>
+            </div>
+            <div>
+              <span className="text-gray-500">Cooldown</span>
+              <p>{rules.cooldownSeconds.toString()}s</p>
+            </div>
+            <div>
+              <span className="text-gray-500">Exception mode</span>
+              <p>{Number(rules.exceptionMode) === 0 ? "Hard law" : "Governed"}</p>
+            </div>
+          </div>
+          <div>
+            <span className="text-gray-500">Policy hash</span>
+            <p className="font-mono text-xs break-all">{policyHash}</p>
+          </div>
+        </div>
+      )}
+
+      {tab === "agents" && isOwner && (
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={agentAddr}
+              onChange={(e) => setAgentAddr(e.target.value)}
+              placeholder="Agent address (0x...)"
+              className="flex-1 px-3 py-2 border rounded font-mono text-sm"
+            />
+            <button
+              onClick={handleBindAgent}
+              disabled={isPending || isConfirming}
+              className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50"
+            >
+              Bind Agent
+            </button>
+          </div>
+        </div>
+      )}
+
+      {tab === "fund" && (
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <input
+              type="number"
+              value={fundAmount}
+              onChange={(e) => setFundAmount(e.target.value)}
+              placeholder={`Amount (${tokenSymbol})`}
+              className="flex-1 px-3 py-2 border rounded"
+            />
+            <button
+              onClick={handleFund}
+              disabled={isPending || isConfirming}
+              className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50"
+            >
+              {isPending ? "Confirm..." : "Fund"}
+            </button>
+          </div>
+          <p className="text-xs text-gray-500">
+            Two transactions: approve + fund. Confirm both in your wallet.
+          </p>
+        </div>
+      )}
+
+      {tab === "exceptions" && (
+        <div className="text-sm text-gray-500">
+          Exception queue — approve or reject pending exceptions here.
+          {Number(rules.exceptionMode) === 0 && (
+            <p className="mt-2">This mandate uses hard law. No exceptions are possible.</p>
+          )}
+        </div>
+      )}
+
+      {isSuccess && hash && (
+        <p className="text-sm text-green-600">
+          Done.{" "}
+          <a
+            href={`${EXPLORER_URL}/tx/${hash}`}
+            target="_blank"
+            rel="noopener"
+            className="underline"
+          >
+            View tx
+          </a>
+        </p>
+      )}
+    </div>
+  );
+}
