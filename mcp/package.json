@@ -1,0 +1,21 @@
+{
+  "name": "@lex/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "lex-mcp": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@lex/sdk": "file:../sdk",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

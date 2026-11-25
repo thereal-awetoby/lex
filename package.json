@@ -1,0 +1,19 @@
+{
+  "name": "lex",
+  "private": true,
+  "workspaces": [
+    "sdk",
+    "mcp",
+    "app"
+  ],
+  "scripts": {
+    "build:contracts": "cd contracts && forge build",
+    "test:contracts": "cd contracts && forge test -vvv",
+    "build:sdk": "cd sdk && npx tsc",
+    "build:mcp": "cd mcp && npx tsc",
+    "dev:app": "cd app && npm run dev",
+    "build:app": "cd app && npm run build",
+    "deploy": "npx tsx scripts/deploy.ts",
+    "exercise": "npx tsx scripts/exercise-mainnet.ts"
+  }
+}

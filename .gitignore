@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+.next/
+artifact/
+
+# Env / secrets
+.env
+.env.local
+
+# Misc
+.DS_Store
+*.log
+coverage/
+forge-cache/
