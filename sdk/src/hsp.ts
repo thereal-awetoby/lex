@@ -148,8 +148,10 @@ export function hspOrderIdOf(paymentRequestId: string): Hex {
 
 /**
  * Checks an HSP Cart Mandate before paying it.
- * Verifies the cart hash in the merchant JWT, expiry, chain and token.
- * If `merchantSigner` is given, also verifies the ES256K signature recovers to that address.
+ * Verifies the cart hash in the merchant JWT, expiry, chain, token, and that the
+ * ES256K signature recovers to `merchantSigner`.
+ * Without a signer the cart is rejected, unless `allowUnverifiedMerchant` is set:
+ * an unsigned check only proves the cart is self-consistent, not who issued it.
  */
 export async function checkCartMandate(
   cart: HspCartMandate,
@@ -158,6 +160,7 @@ export async function checkCartMandate(
     token: `0x${string}`;
     decimals?: number;
     merchantSigner?: `0x${string}`;
+    allowUnverifiedMerchant?: boolean;
     now?: number;
   }
 ): Promise<HspCartCheck> {
@@ -172,6 +175,10 @@ export async function checkCartMandate(
   }
 
   const cartHash = `0x${sha256hex(canonicalJSON(cart.contents))}` as Hex;
+
+  if (!opts.merchantSigner && !opts.allowUnverifiedMerchant) {
+    errors.push("merchantSigner required to verify who issued the cart");
+  }
 
   // JWT
   const parts = (cart.merchant_authorization || "").split(".");
@@ -236,7 +243,12 @@ export async function payHspCart(
   lex: Lex,
   mandateId: bigint,
   cart: HspCartMandate,
-  opts: { category: Hex; merchantSigner?: `0x${string}`; decimals?: number }
+  opts: {
+    category: Hex;
+    merchantSigner?: `0x${string}`;
+    allowUnverifiedMerchant?: boolean;
+    decimals?: number;
+  }
 ): Promise<{ check: HspCartCheck; receiptId?: bigint; txHash?: `0x${string}` }> {
   const info = await lex.getMandate(mandateId);
   const chainId = lex.publicClient.chain?.id ?? 177;
@@ -245,6 +257,7 @@ export async function payHspCart(
     token: info.token,
     decimals: opts.decimals,
     merchantSigner: opts.merchantSigner,
+    allowUnverifiedMerchant: opts.allowUnverifiedMerchant,
   });
   if (!check.ok) return { check };
 

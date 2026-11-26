@@ -134,7 +134,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           category: { type: "string", description: "Spend category, e.g. compute, data" },
           merchantSigner: {
             type: "string",
-            description: "Optional merchant signer address; if set, the ES256K signature must recover to it",
+            description:
+              "Merchant signer address; the ES256K signature must recover to it. Defaults to LEX_HSP_MERCHANT_SIGNER.",
           },
         },
         required: ["mandateId", "cartMandate", "category"],
@@ -243,7 +244,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const cart = JSON.parse(args!.cartMandate as string) as HspCartMandate;
         const result = await payHspCart(lex, BigInt(args!.mandateId as string), cart, {
           category: encodeCategory(args!.category as string),
-          merchantSigner: (args!.merchantSigner as `0x${string}`) || undefined,
+          merchantSigner:
+            ((args!.merchantSigner as `0x${string}`) || (process.env.LEX_HSP_MERCHANT_SIGNER as `0x${string}`)) ||
+            undefined,
+          allowUnverifiedMerchant: process.env.LEX_HSP_ALLOW_UNVERIFIED === "true",
         });
         if (!result.check.ok) {
           return {
