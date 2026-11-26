@@ -20,6 +20,8 @@ const TRUSTED_HSP_SIGNERS = (process.env.LEX_HSP_MERCHANT_SIGNERS || process.env
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 
+const ZERO32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
+
 const lex = new Lex({ mandateAddress: MANDATE_ADDRESS, rpcUrl: RPC_URL });
 
 if (AGENT_KEY) {
@@ -150,6 +152,53 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "execute_exception",
+      description:
+        "Execute an approved exception after its time delay has passed (governed mandates with a time delay)",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          exceptionId: { type: "string", description: "Exception ID" },
+        },
+        required: ["exceptionId"],
+      },
+    },
+    {
+      name: "pay_escrow",
+      description:
+        "Lock funds in escrow for a counterparty. Same mandate rules apply as pay. Funds release after the payer attests delivery, or return to the mandate after the timeout.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          mandateId: { type: "string", description: "Mandate ID" },
+          counterparty: { type: "string", description: "Recipient address" },
+          amount: { type: "string", description: "Amount in token smallest unit" },
+          timeoutSeconds: { type: "string", description: "Seconds before an unattested escrow can be refunded" },
+          ref: { type: "string", description: "Optional bytes32 invoice/order reference" },
+          attestationSchemaId: { type: "string", description: "Optional bytes32 schema id" },
+        },
+        required: ["mandateId", "counterparty", "amount", "timeoutSeconds"],
+      },
+    },
+    {
+      name: "attest_escrow",
+      description: "Confirm delivery for a locked escrow (payer side)",
+      inputSchema: {
+        type: "object" as const,
+        properties: { escrowId: { type: "string", description: "Escrow ID" } },
+        required: ["escrowId"],
+      },
+    },
+    {
+      name: "release_escrow",
+      description: "Release an attested escrow to its counterparty",
+      inputSchema: {
+        type: "object" as const,
+        properties: { escrowId: { type: "string", description: "Escrow ID" } },
+        required: ["escrowId"],
+      },
+    },
+    {
       name: "get_escrow",
       description: "Get escrow details",
       inputSchema: {
@@ -195,17 +244,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           hspOrderId as `0x${string}`
         );
         const receipt = await lex.getReceipt(result.receiptId);
+        const decision = ["ALLOW", "REFUSE", "EXCEPTION"][Number(receipt.decision)];
+        const reason = REASON_CODES[Number(receipt.reasonCode)] || String(receipt.reasonCode);
         return {
           content: [
             {
               type: "text",
               text: JSON.stringify(
-                { ...result, receipt, receiptId: result.receiptId.toString() },
+                { decision, reason, paid: decision !== "REFUSE", ...result, receipt },
                 replacer,
                 2
               ),
             },
           ],
+          // A refusal is a valid outcome, but flag it so the agent does not assume payment happened
+          isError: decision === "REFUSE",
         };
       }
 
@@ -301,6 +354,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ],
           isError: decision === "REFUSE",
         };
+      }
+
+      case "execute_exception": {
+        const result = await lex.executeException(BigInt(args!.exceptionId as string));
+        return { content: [{ type: "text", text: JSON.stringify(result, replacer, 2) }] };
+      }
+
+      case "pay_escrow": {
+        const result = await lex.payWithEscrow(
+          BigInt(args!.mandateId as string),
+          args!.counterparty as `0x${string}`,
+          BigInt(args!.amount as string),
+          ((args!.attestationSchemaId as string) || ZERO32) as `0x${string}`,
+          ((args!.ref as string) || ZERO32) as `0x${string}`,
+          BigInt(args!.timeoutSeconds as string)
+        );
+        return { content: [{ type: "text", text: JSON.stringify(result, replacer, 2) }] };
+      }
+
+      case "attest_escrow": {
+        const txHash = await lex.attestEscrow(BigInt(args!.escrowId as string));
+        return { content: [{ type: "text", text: JSON.stringify({ txHash }, null, 2) }] };
+      }
+
+      case "release_escrow": {
+        const txHash = await lex.releaseEscrow(BigInt(args!.escrowId as string));
+        return { content: [{ type: "text", text: JSON.stringify({ txHash }, null, 2) }] };
       }
 
       case "get_escrow": {

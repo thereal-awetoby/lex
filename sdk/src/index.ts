@@ -484,6 +484,29 @@ export class Lex {
     return { receiptId, txHash: hash };
   }
 
+  async executeException(
+    exceptionId: bigint,
+    hspOrderId: `0x${string}` = "0x0000000000000000000000000000000000000000000000000000000000000000"
+  ): Promise<{ receiptId: bigint; txHash: `0x${string}` }> {
+    const wallet = this.requireWallet();
+    const hash = await wallet.writeContract({
+      address: this.mandateAddress,
+      abi: MANDATE_ABI,
+      functionName: "executeException",
+      args: [exceptionId, hspOrderId],
+      chain: this.publicClient.chain,
+      account: wallet.account!,
+    });
+    const txReceipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    const logs = parseEventLogs({
+      abi: MANDATE_ABI,
+      logs: txReceipt.logs as any,
+      eventName: "ExceptionSpend",
+    });
+    const receiptId = (logs[0]?.args as any)?.receiptId as bigint;
+    return { receiptId, txHash: hash };
+  }
+
   async rejectException(exceptionId: bigint): Promise<`0x${string}`> {
     const wallet = this.requireWallet();
     const hash = await wallet.writeContract({
@@ -525,6 +548,35 @@ export class Lex {
     return { escrowId, txHash: hash };
   }
 
+  private async simpleWrite(functionName: "attestEscrow" | "releaseEscrow" | "refundEscrow", id: bigint) {
+    const wallet = this.requireWallet();
+    const hash = await wallet.writeContract({
+      address: this.mandateAddress,
+      abi: MANDATE_ABI,
+      functionName,
+      args: [id],
+      chain: this.publicClient.chain,
+      account: wallet.account!,
+    });
+    await this.publicClient.waitForTransactionReceipt({ hash });
+    return hash;
+  }
+
+  /** Payer side (owner or bound agent) confirms delivery */
+  attestEscrow(escrowId: bigint): Promise<`0x${string}`> {
+    return this.simpleWrite("attestEscrow", escrowId);
+  }
+
+  /** Pays out an attested escrow to the counterparty */
+  releaseEscrow(escrowId: bigint): Promise<`0x${string}`> {
+    return this.simpleWrite("releaseEscrow", escrowId);
+  }
+
+  /** Returns an unattested escrow to the mandate balance after its timeout */
+  refundEscrow(escrowId: bigint): Promise<`0x${string}`> {
+    return this.simpleWrite("refundEscrow", escrowId);
+  }
+
   async withdraw(mandateId: bigint, amount: bigint): Promise<`0x${string}`> {
     const wallet = this.requireWallet();
     const hash = await wallet.writeContract({
@@ -540,6 +592,24 @@ export class Lex {
   }
 
   // ── Event queries ──────────────────────────────────────────────────
+
+  async getExceptionRequests(mandateId: bigint, fromBlock: bigint = 0n): Promise<any[]> {
+    return this.publicClient.getLogs({
+      address: this.mandateAddress,
+      event: {
+        type: "event",
+        name: "ExceptionRequested",
+        inputs: [
+          { name: "mandateId", type: "uint256", indexed: true },
+          { name: "exceptionId", type: "uint256", indexed: true },
+          { name: "amount", type: "uint256", indexed: false },
+          { name: "counterparty", type: "address", indexed: false },
+        ],
+      },
+      args: { mandateId },
+      fromBlock,
+    });
+  }
 
   async getSpendDecisions(
     mandateId: bigint,
