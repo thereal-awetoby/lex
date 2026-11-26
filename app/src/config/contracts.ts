@@ -8,3 +8,6 @@ export const TOKENS = {
 };
 
 export const EXPLORER_URL = "https://hashkeyscan.io";
+
+// Block the Mandate contract was deployed at. Log queries start here.
+export const DEPLOY_BLOCK = BigInt(process.env.NEXT_PUBLIC_DEPLOY_BLOCK || "0");
