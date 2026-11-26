@@ -151,6 +151,15 @@ export class Lex {
     return this;
   }
 
+  /** Waits for a transaction and throws if it reverted */
+  private async waitOk(hash: `0x${string}`) {
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") {
+      throw new Error(`Transaction ${hash} reverted`);
+    }
+    return receipt;
+  }
+
   private requireWallet(): WalletClient {
     if (!this.walletClient) throw new Error("No wallet connected. Call .connect(walletClient) first.");
     return this.walletClient;
@@ -246,7 +255,7 @@ export class Lex {
       account: wallet.account!,
     });
 
-    const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    const receipt = await this.waitOk(hash);
     const logs = parseEventLogs({
       abi: MANDATE_ABI,
       logs: receipt.logs as any,
@@ -260,7 +269,7 @@ export class Lex {
     const wallet = this.requireWallet();
     // First approve token transfer
     const info = await this.getMandate(mandateId);
-    await wallet.writeContract({
+    const approveHash = await wallet.writeContract({
       address: info.token,
       abi: ERC20_ABI,
       functionName: "approve",
@@ -268,6 +277,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
+    await this.waitOk(approveHash);
 
     const hash = await wallet.writeContract({
       address: this.mandateAddress,
@@ -277,7 +287,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -299,7 +309,7 @@ export class Lex {
       account: wallet.account!,
     });
 
-    const txReceipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    const txReceipt = await this.waitOk(hash);
     const logs = parseEventLogs({
       abi: MANDATE_ABI,
       logs: txReceipt.logs as any,
@@ -319,7 +329,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -333,7 +343,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -347,7 +357,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -361,7 +371,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -375,7 +385,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -389,7 +399,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -403,7 +413,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -417,7 +427,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -431,7 +441,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -451,7 +461,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    const txReceipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    const txReceipt = await this.waitOk(hash);
     const logs = parseEventLogs({
       abi: MANDATE_ABI,
       logs: txReceipt.logs as any,
@@ -474,7 +484,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    const txReceipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    const txReceipt = await this.waitOk(hash);
     const logs = parseEventLogs({
       abi: MANDATE_ABI,
       logs: txReceipt.logs as any,
@@ -497,7 +507,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    const txReceipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    const txReceipt = await this.waitOk(hash);
     const logs = parseEventLogs({
       abi: MANDATE_ABI,
       logs: txReceipt.logs as any,
@@ -517,7 +527,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -538,7 +548,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    const txReceipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    const txReceipt = await this.waitOk(hash);
     const logs = parseEventLogs({
       abi: MANDATE_ABI,
       logs: txReceipt.logs as any,
@@ -558,7 +568,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
@@ -587,7 +597,7 @@ export class Lex {
       chain: this.publicClient.chain,
       account: wallet.account!,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await this.waitOk(hash);
     return hash;
   }
 
