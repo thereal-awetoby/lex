@@ -1,3 +1,5 @@
+import { stringToHex } from "viem";
+
 export const HSK_MAINNET = {
   id: 177,
   name: "HashKey Chain",
@@ -46,7 +48,7 @@ export const CATEGORIES = {
   ESCROW: encodeCategory("escrow"),
 } as const;
 
+/** Same encoding as Solidity bytes32("name"): UTF-8, right-padded to 32 bytes */
 export function encodeCategory(name: string): `0x${string}` {
-  const hex = Buffer.from(name).toString("hex").padEnd(64, "0");
-  return `0x${hex}`;
+  return stringToHex(name, { size: 32 });
 }
