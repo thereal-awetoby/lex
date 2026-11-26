@@ -18,8 +18,10 @@ export function MandateView() {
     useMandateWrite();
 
   const [fundAmount, setFundAmount] = useState("");
+  const [withdrawAmount, setWithdrawAmount] = useState("");
   const [agentAddr, setAgentAddr] = useState("");
-  const [tab, setTab] = useState<"overview" | "agents" | "fund" | "exceptions">("overview");
+  const [revokeAddr, setRevokeAddr] = useState("");
+  const [tab, setTab] = useState<"overview" | "agents" | "fund" | "withdraw" | "exceptions">("overview");
 
   const handleLoad = () => {
     if (mandateIdInput) setMandateId(BigInt(mandateIdInput));
@@ -116,7 +118,7 @@ export function MandateView() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b">
-        {(["overview", "agents", "fund", "exceptions"] as const).map((t) => (
+        {(["overview", "agents", "fund", "withdraw", "exceptions"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -166,6 +168,26 @@ export function MandateView() {
               <span className="text-gray-500">Exception mode</span>
               <p>{Number(rules.exceptionMode) === 0 ? "Hard law" : "Governed"}</p>
             </div>
+            <div>
+              <span className="text-gray-500">Absolute ceiling</span>
+              <p>{formatUnits(rules.absoluteCeiling, 6)}</p>
+            </div>
+            <div>
+              <span className="text-gray-500">Rule change timelock</span>
+              <p>{rules.timelockForRuleChange.toString()}s</p>
+            </div>
+            {(rules.activeWindowStart > 0n || rules.activeWindowEnd > 0n) && (
+              <>
+                <div>
+                  <span className="text-gray-500">Active window start</span>
+                  <p>{rules.activeWindowStart.toString()}s from midnight</p>
+                </div>
+                <div>
+                  <span className="text-gray-500">Active window end</span>
+                  <p>{rules.activeWindowEnd.toString()}s from midnight</p>
+                </div>
+              </>
+            )}
           </div>
           <div>
             <span className="text-gray-500">Policy hash</span>
@@ -175,22 +197,52 @@ export function MandateView() {
       )}
 
       {tab === "agents" && isOwner && (
-        <div className="space-y-3">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={agentAddr}
-              onChange={(e) => setAgentAddr(e.target.value)}
-              placeholder="Agent address (0x...)"
-              className="flex-1 px-3 py-2 border rounded font-mono text-sm"
-            />
-            <button
-              onClick={handleBindAgent}
-              disabled={isPending || isConfirming}
-              className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50"
-            >
-              Bind Agent
-            </button>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <p className="text-sm text-gray-500">Bind agent</p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={agentAddr}
+                onChange={(e) => setAgentAddr(e.target.value)}
+                placeholder="Agent address (0x...)"
+                className="flex-1 px-3 py-2 border rounded font-mono text-sm"
+              />
+              <button
+                onClick={handleBindAgent}
+                disabled={isPending || isConfirming}
+                className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50"
+              >
+                Bind
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <p className="text-sm text-gray-500">Revoke agent</p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={revokeAddr}
+                onChange={(e) => setRevokeAddr(e.target.value)}
+                placeholder="Agent address (0x...)"
+                className="flex-1 px-3 py-2 border rounded font-mono text-sm"
+              />
+              <button
+                onClick={() => {
+                  if (!revokeAddr || !mandateId) return;
+                  writeContract({
+                    address: mandateAddress,
+                    abi: mandateAbi,
+                    functionName: "revokeAgent",
+                    args: [mandateId, revokeAddr as `0x${string}`],
+                  });
+                }}
+                disabled={isPending || isConfirming}
+                className="px-4 py-2 bg-red-600 text-white rounded text-sm disabled:opacity-50"
+              >
+                Revoke
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -216,6 +268,39 @@ export function MandateView() {
           <p className="text-xs text-gray-500">
             Two transactions: approve + fund. Confirm both in your wallet.
           </p>
+        </div>
+      )}
+
+      {tab === "withdraw" && isOwner && (
+        <div className="space-y-3">
+          <p className="text-sm text-gray-500">
+            Withdraw unspent funds back to your wallet. Balance: {formatUnits(balance, 6)} {tokenSymbol}
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              value={withdrawAmount}
+              onChange={(e) => setWithdrawAmount(e.target.value)}
+              placeholder={`Amount (${tokenSymbol})`}
+              className="flex-1 px-3 py-2 border rounded"
+            />
+            <button
+              onClick={() => {
+                if (!withdrawAmount || !mandateId) return;
+                const amount = BigInt(Math.floor(Number(withdrawAmount) * 1e6));
+                writeContract({
+                  address: mandateAddress,
+                  abi: mandateAbi,
+                  functionName: "withdraw",
+                  args: [mandateId, amount],
+                });
+              }}
+              disabled={isPending || isConfirming}
+              className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50"
+            >
+              Withdraw
+            </button>
+          </div>
         </div>
       )}
 

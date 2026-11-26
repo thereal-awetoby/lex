@@ -37,6 +37,12 @@ export default function MandatePublicPage() {
           label="Exception mode"
           value={Number(rules.exceptionMode) === 0 ? "Hard law" : "Governed"}
         />
+        <Row label="Absolute ceiling" value={formatUnits(rules.absoluteCeiling, 6)} />
+        {rules.timelockForRuleChange > 0n && (
+          <Row label="Rule change timelock" value={`${rules.timelockForRuleChange.toString()}s`} />
+        )}
+        <Row label="Preferred rail" value={["HSP", "Direct", "HSP then Direct"][Number(rules.preferredRail)] || "Unknown"} />
+        <Row label="Token" value={token} mono />
         <Row label="Policy hash" value={policyHash} mono />
       </div>
     </main>
