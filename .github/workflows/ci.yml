@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
       - name: Install forge-std
-        run: forge install foundry-rs/forge-std --no-git
+        run: git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
       - name: Build
         run: forge build --sizes
       - name: Test

@@ -12,9 +12,6 @@ contract Mandate is IMandate {
         Rules rules;
         address token;
         uint256 balance;
-        uint256 nextReceiptId;
-        uint256 nextExceptionId;
-        uint256 nextEscrowId;
         uint256 lastSpendTime;
         bytes32 policyHash;
         // rolling window tracking
@@ -23,6 +20,10 @@ contract Mandate is IMandate {
     }
 
     uint256 public nextMandateId = 1;
+    // IDs are global so receipts, exceptions and escrows never collide across mandates
+    uint256 public nextReceiptId = 1;
+    uint256 public nextExceptionId = 1;
+    uint256 public nextEscrowId = 1;
 
     mapping(uint256 => MandateData) public mandates;
     mapping(uint256 => mapping(address => bool)) public boundAgents;
@@ -92,9 +93,6 @@ contract Mandate is IMandate {
         m.owner = msg.sender;
         m.rules = rules;
         m.token = token;
-        m.nextReceiptId = 1;
-        m.nextExceptionId = 1;
-        m.nextEscrowId = 1;
         m.rollingWindowStart = block.timestamp;
         m.policyHash = _computePolicyHash(mandateId, rules);
 
@@ -129,7 +127,7 @@ contract Mandate is IMandate {
     function fund(uint256 mandateId, uint256 amount) external {
         MandateData storage m = mandates[mandateId];
         require(m.owner != address(0), "NO_MANDATE");
-        IERC20(m.token).transferFrom(msg.sender, address(this), amount);
+        _safeTransferFrom(m.token, msg.sender, address(this), amount);
         m.balance += amount;
         emit MandateFunded(mandateId, m.token, amount);
     }
@@ -206,7 +204,7 @@ contract Mandate is IMandate {
         pendingRuleChanges[mandateId].pending = false;
     }
 
-    function _applyRules(uint256 mandateId, Rules calldata newRules) internal {
+    function _applyRules(uint256 mandateId, Rules memory newRules) internal {
         mandates[mandateId].rules = newRules;
         mandates[mandateId].policyHash = _computePolicyHash(mandateId, newRules);
         emit RulesUpdated(mandateId, mandates[mandateId].policyHash);
@@ -243,6 +241,10 @@ contract Mandate is IMandate {
 
         if (m.paused) return (false, 1); // PAUSED
 
+        // Denylist is checked before everything else so the reason is never masked
+        if (denylist[mandateId][counterparty])
+            return (false, 5); // DENYLISTED
+
         if (m.rules.perTxCap > 0 && amount > m.rules.perTxCap)
             return (false, 2); // OVER_TX_CAP
 
@@ -260,10 +262,6 @@ contract Mandate is IMandate {
         // Allowlist
         if (allowlistEnabled[mandateId] && !allowlist[mandateId][counterparty])
             return (false, 4); // NOT_ALLOWLISTED
-
-        // Denylist
-        if (denylist[mandateId][counterparty])
-            return (false, 5); // DENYLISTED
 
         // Counterparty cap
         if (m.rules.perCounterpartyCap > 0) {
@@ -325,20 +323,17 @@ contract Mandate is IMandate {
         bytes32 category,
         bytes32 ref,
         bytes32 hspOrderId
-    ) external onlyAgent(mandateId) notPaused(mandateId) returns (uint256 receiptId) {
+    ) external onlyAgent(mandateId) returns (uint256 receiptId) {
+        // No notPaused modifier: a paused mandate still records a REFUSE receipt (code 1)
         (bool ok, uint16 reasonCode) = _checkSpend(mandateId, amount, counterparty, category);
 
         MandateData storage m = mandates[mandateId];
-        receiptId = m.nextReceiptId++;
+        receiptId = nextReceiptId++;
 
         if (!ok) {
-            if (reasonCode == 5) {
-                // Denylisted — always refuse regardless of exception mode
-                _emitRefuseReceipt(mandateId, receiptId, reasonCode, amount, counterparty, category, ref);
-                return receiptId;
-            }
-            if (m.rules.exceptionMode == ExceptionMode.GOVERNED && reasonCode != 12 && reasonCode != 14) {
-                // Can request exception (but not for absolute ceiling or insufficient funds)
+            // Paused, denylisted, over absolute ceiling and insufficient funds are never exceptionable
+            bool exceptionable = reasonCode != 1 && reasonCode != 5 && reasonCode != 12 && reasonCode != 14;
+            if (m.rules.exceptionMode == ExceptionMode.GOVERNED && exceptionable) {
                 _emitRefuseReceipt(mandateId, receiptId, 9, amount, counterparty, category, ref);
                 return receiptId;
             }
@@ -361,6 +356,25 @@ contract Mandate is IMandate {
         bytes32 hspOrderId,
         uint256 exceptionId
     ) internal {
+        MandateData storage m = mandates[mandateId];
+
+        _trackSpend(mandateId, amount, counterparty, category);
+        m.balance -= amount;
+
+        Decision decision = exceptionId > 0 ? Decision.EXCEPTION : Decision.ALLOW;
+        _writeReceipt(mandateId, receiptId, decision, 0, amount, counterparty, category, ref, exceptionId, hspOrderId, bytes32(0));
+
+        // Effects are done; interaction last
+        _safeTransfer(m.token, counterparty, amount);
+
+        emit SpendDecision(mandateId, receiptId, decision, 0, amount, counterparty, category);
+        if (exceptionId > 0) {
+            emit ExceptionSpend(mandateId, exceptionId, receiptId);
+        }
+    }
+
+    /// @dev Updates rolling, counterparty, category and cooldown tracking. Used by spend and escrow.
+    function _trackSpend(uint256 mandateId, uint256 amount, address counterparty, bytes32 category) internal {
         MandateData storage m = mandates[mandateId];
 
         // Update rolling window
@@ -391,19 +405,28 @@ contract Mandate is IMandate {
         }
 
         m.lastSpendTime = block.timestamp;
-        m.balance -= amount;
+    }
 
-        // Transfer tokens
-        IERC20(m.token).transfer(counterparty, amount);
-
-        Decision decision = exceptionId > 0 ? Decision.EXCEPTION : Decision.ALLOW;
-
+    function _writeReceipt(
+        uint256 mandateId,
+        uint256 receiptId,
+        Decision decision,
+        uint16 reasonCode,
+        uint256 amount,
+        address counterparty,
+        bytes32 category,
+        bytes32 ref,
+        uint256 exceptionId,
+        bytes32 hspOrderId,
+        bytes32 txRef
+    ) internal {
+        MandateData storage m = mandates[mandateId];
         receipts[receiptId] = Receipt({
             receiptId: receiptId,
             mandateId: mandateId,
             policyHash: m.policyHash,
             decision: decision,
-            reasonCode: 0,
+            reasonCode: reasonCode,
             amount: amount,
             token: m.token,
             counterparty: counterparty,
@@ -411,14 +434,23 @@ contract Mandate is IMandate {
             ref: ref,
             exceptionId: exceptionId,
             hspOrderId: hspOrderId,
-            txRef: bytes32(0),
+            txRef: txRef,
             timestamp: block.timestamp
         });
+    }
 
-        emit SpendDecision(mandateId, receiptId, decision, 0, amount, counterparty, category);
-        if (exceptionId > 0) {
-            emit ExceptionSpend(mandateId, exceptionId, receiptId);
-        }
+    /// @dev Handles tokens that return no bool (USDT-style) and reverts on failure.
+    function _safeTransfer(address token, address to, uint256 amount) internal {
+        require(token.code.length > 0, "NOT_A_TOKEN");
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, amount));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "TRANSFER_FAILED");
+    }
+
+    function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
+        require(token.code.length > 0, "NOT_A_TOKEN");
+        (bool success, bytes memory data) =
+            token.call(abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, amount));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "TRANSFER_FROM_FAILED");
     }
 
     function _emitRefuseReceipt(
@@ -430,23 +462,7 @@ contract Mandate is IMandate {
         bytes32 category,
         bytes32 ref
     ) internal {
-        MandateData storage m = mandates[mandateId];
-        receipts[receiptId] = Receipt({
-            receiptId: receiptId,
-            mandateId: mandateId,
-            policyHash: m.policyHash,
-            decision: Decision.REFUSE,
-            reasonCode: reasonCode,
-            amount: amount,
-            token: m.token,
-            counterparty: counterparty,
-            category: category,
-            ref: ref,
-            exceptionId: 0,
-            hspOrderId: bytes32(0),
-            txRef: bytes32(0),
-            timestamp: block.timestamp
-        });
+        _writeReceipt(mandateId, receiptId, Decision.REFUSE, reasonCode, amount, counterparty, category, ref, 0, bytes32(0), bytes32(0));
         emit SpendDecision(mandateId, receiptId, Decision.REFUSE, reasonCode, amount, counterparty, category);
     }
 
@@ -469,7 +485,7 @@ contract Mandate is IMandate {
             require(amount <= m.rules.absoluteCeiling, "OVER_ABSOLUTE_CEILING");
         }
 
-        exceptionId = m.nextExceptionId++;
+        exceptionId = nextExceptionId++;
         exceptions[exceptionId] = ExceptionRequest({
             exceptionId: exceptionId,
             mandateId: mandateId,
@@ -492,8 +508,10 @@ contract Mandate is IMandate {
     ) external returns (uint256 receiptId) {
         ExceptionRequest storage e = exceptions[exceptionId];
         require(!e.resolved, "ALREADY_RESOLVED");
+        require(e.mandateId != 0, "NO_EXCEPTION");
         uint256 mandateId = e.mandateId;
         MandateData storage m = mandates[mandateId];
+        require(!m.paused, "PAUSED");
 
         require(
             msg.sender == m.owner || approvers[mandateId][msg.sender],
@@ -530,15 +548,47 @@ contract Mandate is IMandate {
         }
 
         if (canExecute) {
-            e.resolved = true;
-            e.approved = true;
-            receiptId = m.nextReceiptId++;
-            _executeSpend(mandateId, receiptId, e.amount, e.counterparty, e.category, bytes32(0), hspOrderId, exceptionId);
+            receiptId = _resolveAndExecute(exceptionId, hspOrderId);
         }
+    }
+
+    /// @notice Executes an approved exception once its time delay has passed.
+    ///         Needed when the only approval was cast before the delay elapsed.
+    function executeException(uint256 exceptionId, bytes32 hspOrderId) external returns (uint256 receiptId) {
+        ExceptionRequest storage e = exceptions[exceptionId];
+        require(e.mandateId != 0, "NO_EXCEPTION");
+        require(!e.resolved, "ALREADY_RESOLVED");
+        MandateData storage m = mandates[e.mandateId];
+        require(!m.paused, "PAUSED");
+        require(
+            msg.sender == m.owner || approvers[e.mandateId][msg.sender] || boundAgents[e.mandateId][msg.sender],
+            "NOT_AUTHORIZED"
+        );
+        require(m.rules.exceptionTimeDelay > 0, "NO_TIME_DELAY");
+        require(e.approvalCount > 0, "NO_APPROVALS");
+        require(block.timestamp >= e.createdAt + m.rules.exceptionTimeDelay, "DELAY_NOT_PASSED");
+        receiptId = _resolveAndExecute(exceptionId, hspOrderId);
+    }
+
+    function _resolveAndExecute(uint256 exceptionId, bytes32 hspOrderId) internal returns (uint256 receiptId) {
+        ExceptionRequest storage e = exceptions[exceptionId];
+        MandateData storage m = mandates[e.mandateId];
+        // Re-check the limits no exception can override, in case state changed since the request
+        require(!denylist[e.mandateId][e.counterparty], "DENYLISTED_NO_EXCEPTION");
+        if (m.rules.absoluteCeiling > 0) {
+            require(e.amount <= m.rules.absoluteCeiling, "OVER_ABSOLUTE_CEILING");
+        }
+        require(e.amount <= m.balance, "INSUFFICIENT_FUNDS");
+
+        e.resolved = true;
+        e.approved = true;
+        receiptId = nextReceiptId++;
+        _executeSpend(e.mandateId, receiptId, e.amount, e.counterparty, e.category, bytes32(0), hspOrderId, exceptionId);
     }
 
     function rejectException(uint256 exceptionId) external {
         ExceptionRequest storage e = exceptions[exceptionId];
+        require(e.mandateId != 0, "NO_EXCEPTION");
         require(!e.resolved, "ALREADY_RESOLVED");
         uint256 mandateId = e.mandateId;
         MandateData storage m = mandates[mandateId];
@@ -562,11 +612,16 @@ contract Mandate is IMandate {
         bytes32 ref,
         uint256 timeout
     ) external onlyAgent(mandateId) notPaused(mandateId) returns (uint256 escrowId) {
-        (bool ok, uint16 reasonCode) = _checkSpend(mandateId, amount, counterparty, bytes32("escrow"));
-        require(ok, string(abi.encodePacked("SPEND_CHECK_FAILED:", reasonCode)));
+        require(timeout > 0, "TIMEOUT_REQUIRED");
+        bytes32 category = bytes32("escrow");
+        (bool ok, uint16 reasonCode) = _checkSpend(mandateId, amount, counterparty, category);
+        require(ok, string(abi.encodePacked("SPEND_CHECK_FAILED:", _toString(reasonCode))));
 
         MandateData storage m = mandates[mandateId];
-        escrowId = m.nextEscrowId++;
+        escrowId = nextEscrowId++;
+
+        // Escrow counts against every limit exactly like a direct spend
+        _trackSpend(mandateId, amount, counterparty, category);
         m.balance -= amount;
 
         escrows[escrowId] = EscrowLeg({
@@ -582,27 +637,21 @@ contract Mandate is IMandate {
             timeout: timeout
         });
 
-        // Update tracking same as spend
-        uint256 windowDuration = m.rules.rollingWindowDuration > 0
-            ? m.rules.rollingWindowDuration
-            : 86400;
-        if (block.timestamp >= m.rollingWindowStart + windowDuration) {
-            m.rollingWindowStart = block.timestamp;
-            m.rollingWindowSpent = amount;
-        } else {
-            m.rollingWindowSpent += amount;
-        }
-        m.lastSpendTime = block.timestamp;
-
+        // The lock is the spend decision, so it gets a receipt. txRef carries the escrow id.
+        uint256 receiptId = nextReceiptId++;
+        _writeReceipt(
+            mandateId, receiptId, Decision.ALLOW, 0, amount, counterparty, category, ref, 0, bytes32(0), bytes32(escrowId)
+        );
+        emit SpendDecision(mandateId, receiptId, Decision.ALLOW, 0, amount, counterparty, category);
         emit EscrowLocked(mandateId, escrowId, amount);
     }
 
+    /// @notice Payer side (owner or bound agent) confirms delivery. The counterparty cannot attest for itself.
     function attestEscrow(uint256 escrowId) external {
         EscrowLeg storage e = escrows[escrowId];
         require(e.state == EscrowState.LOCKED, "NOT_LOCKED");
-        // Counterparty or owner can attest
         require(
-            msg.sender == e.counterparty || msg.sender == mandates[e.mandateId].owner,
+            msg.sender == mandates[e.mandateId].owner || boundAgents[e.mandateId][msg.sender],
             "NOT_AUTHORIZED"
         );
         e.state = EscrowState.ATTESTED;
@@ -619,22 +668,33 @@ contract Mandate is IMandate {
         );
 
         e.state = EscrowState.RELEASED;
-        IERC20(e.token).transfer(e.counterparty, e.amount);
+        _safeTransfer(e.token, e.counterparty, e.amount);
         emit EscrowReleased(escrowId);
     }
 
+    /// @notice After the timeout, an unattested escrow returns to the mandate balance.
+    ///         Anyone can trigger it; funds can only go back to the mandate.
+    ///         Before the timeout the counterparty has a guarantee the funds stay locked.
     function refundEscrow(uint256 escrowId) external {
         EscrowLeg storage e = escrows[escrowId];
         require(e.state == EscrowState.LOCKED, "NOT_LOCKED");
-        MandateData storage m = mandates[e.mandateId];
-
-        bool timedOut = e.timeout > 0 && block.timestamp >= e.lockedAt + e.timeout;
-        bool isOwner = msg.sender == m.owner;
-        require(timedOut || isOwner, "NOT_REFUNDABLE");
+        require(block.timestamp >= e.lockedAt + e.timeout, "NOT_REFUNDABLE");
 
         e.state = EscrowState.REFUNDED;
-        m.balance += e.amount;
+        mandates[e.mandateId].balance += e.amount;
         emit EscrowRefunded(escrowId);
+    }
+
+    function _toString(uint256 v) internal pure returns (string memory) {
+        if (v == 0) return "0";
+        uint256 len;
+        for (uint256 t = v; t != 0; t /= 10) len++;
+        bytes memory buf = new bytes(len);
+        while (v != 0) {
+            buf[--len] = bytes1(uint8(48 + (v % 10)));
+            v /= 10;
+        }
+        return string(buf);
     }
 
     // ── Owner withdraw ─────────────────────────────────────────────────
@@ -642,7 +702,7 @@ contract Mandate is IMandate {
         MandateData storage m = mandates[mandateId];
         require(amount <= m.balance, "INSUFFICIENT");
         m.balance -= amount;
-        IERC20(m.token).transfer(msg.sender, amount);
+        _safeTransfer(m.token, msg.sender, amount);
         emit OwnerWithdraw(mandateId, amount);
     }
 
