@@ -71,13 +71,13 @@ See [docs/HSP.md](docs/HSP.md).
 ```
 contracts/   Solidity 0.8.24, Foundry. Mandate.sol, MandateFactory.sol, tests
 sdk/         TypeScript SDK (viem): Lex client and HSP helpers
-mcp/         MCP server for agents to check payments, spend and request exceptions
+mcp/         MCP server for agents to check payments, spend, request exceptions and use escrow
 app/         Next.js owner console and public receipt and mandate pages
 scripts/     deploy and exercise scripts
 docs/        threat model, HSP, SDK, receipts, demo, mainnet proofs
 ```
 
-MCP tools: `get_mandate`, `can_pay`, `pay`, `pay_hsp_cart`, `request_exception`, `get_receipt`, `list_receipts`, `get_exception`, `get_escrow`. The contract supports escrow operations and delayed exception execution, but those write tools are not currently exposed by the MCP server.
+MCP tools: `get_mandate`, `can_pay`, `pay`, `pay_hsp_cart`, `request_exception`, `execute_exception`, `pay_escrow`, `attest_escrow`, `release_escrow`, `get_receipt`, `list_receipts`, `get_exception`, `get_escrow`.
 
 ## Network
 
