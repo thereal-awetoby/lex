@@ -15,8 +15,8 @@ export const HSK_TESTNET = {
   rpcUrl: "https://testnet.hsk.xyz",
   explorerUrl: "https://testnet.hashkeyscan.io",
   tokens: {
-    USDC_E: "" as `0x${string}`, // fill after testnet deploy
-    USDT: "" as `0x${string}`,
+    USDC_E: "0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6" as `0x${string}`,
+    USDT: "0x372325443233fEbaC1F6998aC750276468c83CC6" as `0x${string}`,
   },
 } as const;
 

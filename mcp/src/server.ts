@@ -4,7 +4,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Lex, encodeCategory, REASON_CODES } from "@lex/sdk";
+import { Lex, encodeCategory, REASON_CODES, payHspCart, type HspCartMandate } from "@lex/sdk";
 import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -123,6 +123,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "pay_hsp_cart",
+      description:
+        "Pay an HSP (HashKey Settlement Protocol) Cart Mandate through the Lex mandate. Checks cart hash, expiry, chain and token first. The mandate rules still decide; the receipt records the HSP payment request id.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          mandateId: { type: "string", description: "Mandate ID" },
+          cartMandate: { type: "string", description: "HSP Cart Mandate as JSON (contents + merchant_authorization)" },
+          category: { type: "string", description: "Spend category, e.g. compute, data" },
+          merchantSigner: {
+            type: "string",
+            description: "Optional merchant signer address; if set, the ES256K signature must recover to it",
+          },
+        },
+        required: ["mandateId", "cartMandate", "category"],
+      },
+    },
+    {
       name: "get_escrow",
       description: "Get escrow details",
       inputSchema: {
@@ -219,6 +237,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_exception": {
         const ex = await lex.getException(BigInt(args!.exceptionId as string));
         return { content: [{ type: "text", text: JSON.stringify(ex, replacer, 2) }] };
+      }
+
+      case "pay_hsp_cart": {
+        const cart = JSON.parse(args!.cartMandate as string) as HspCartMandate;
+        const result = await payHspCart(lex, BigInt(args!.mandateId as string), cart, {
+          category: encodeCategory(args!.category as string),
+          merchantSigner: (args!.merchantSigner as `0x${string}`) || undefined,
+        });
+        if (!result.check.ok) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ paid: false, errors: result.check.errors }, null, 2) }],
+            isError: true,
+          };
+        }
+        const receipt = await lex.getReceipt(result.receiptId!);
+        const decision = ["ALLOW", "REFUSE", "EXCEPTION"][Number(receipt.decision)];
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  decision,
+                  reason: REASON_CODES[Number(receipt.reasonCode)],
+                  paid: decision !== "REFUSE",
+                  paymentRequestId: result.check.paymentRequestId,
+                  receiptId: result.receiptId,
+                  txHash: result.txHash,
+                },
+                replacer,
+                2
+              ),
+            },
+          ],
+          isError: decision === "REFUSE",
+        };
       }
 
       case "get_escrow": {
