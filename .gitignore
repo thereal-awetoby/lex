@@ -1,18 +1,11 @@
-# Dependencies
 node_modules/
-
-# Build output
-dist/
-out/
-.next/
-artifact/
-
-# Env / secrets
 .env
 .env.local
-
-# Misc
-.DS_Store
+dist/
+out/
+cache/
+.next/
+contracts/out/
+contracts/cache/
+contracts/lib/
 *.log
-coverage/
-forge-cache/

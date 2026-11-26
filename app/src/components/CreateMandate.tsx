@@ -17,6 +17,10 @@ export function CreateMandate() {
     perCounterpartyCap: "200",
     perCategoryCap: "300",
     cooldownSeconds: "60",
+    absoluteCeiling: "1000",
+    activeWindowStart: "0",
+    activeWindowEnd: "0",
+    timelockForRuleChange: "0",
     exceptionMode: "0", // HARD_LAW
     token: TOKENS.USDC_E,
     agent: "",
@@ -41,12 +45,12 @@ export function CreateMandate() {
       activeWindowStart: 0n,
       activeWindowEnd: 0n,
       minCounterpartyTier: 0n,
-      absoluteCeiling: toUnits(form.rollingWindowCap) * 2n,
+      absoluteCeiling: toUnits(form.absoluteCeiling),
       exceptionMode: Number(form.exceptionMode),
       preferredRail: 0, // HSP
       exceptionApprovalThreshold: form.exceptionMode === "1" ? 1 : 0,
       exceptionTimeDelay: 0n,
-      timelockForRuleChange: 0n,
+      timelockForRuleChange: BigInt(form.timelockForRuleChange),
     };
 
     const agents = form.agent ? [form.agent as `0x${string}`] : [];
@@ -125,6 +129,24 @@ export function CreateMandate() {
             <option value="0">Hard law (no exceptions)</option>
             <option value="1">Governed (exceptions allowed)</option>
           </select>
+        </label>
+        <label className="block">
+          <span className="text-sm text-gray-500">Absolute ceiling (USDC)</span>
+          <input
+            type="number"
+            value={form.absoluteCeiling}
+            onChange={(e) => setForm({ ...form, absoluteCeiling: e.target.value })}
+            className="w-full mt-1 px-3 py-2 border rounded"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm text-gray-500">Rule change timelock (sec)</span>
+          <input
+            type="number"
+            value={form.timelockForRuleChange}
+            onChange={(e) => setForm({ ...form, timelockForRuleChange: e.target.value })}
+            className="w-full mt-1 px-3 py-2 border rounded"
+          />
         </label>
       </div>
 
