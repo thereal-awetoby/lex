@@ -21,6 +21,8 @@ export function MandateView() {
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [agentAddr, setAgentAddr] = useState("");
   const [revokeAddr, setRevokeAddr] = useState("");
+  const [tierAddr, setTierAddr] = useState("");
+  const [tierValue, setTierValue] = useState("");
   const [tab, setTab] = useState<"overview" | "agents" | "fund" | "withdraw" | "exceptions">("overview");
 
   const handleLoad = () => {
@@ -214,6 +216,42 @@ export function MandateView() {
                 className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50"
               >
                 Bind
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <p className="text-sm text-gray-500">
+              Counterparty tier (spends need tier ≥ {rules.minCounterpartyTier.toString()})
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={tierAddr}
+                onChange={(e) => setTierAddr(e.target.value)}
+                placeholder="Counterparty (0x...)"
+                className="flex-1 px-3 py-2 border rounded font-mono text-sm"
+              />
+              <input
+                type="number"
+                value={tierValue}
+                onChange={(e) => setTierValue(e.target.value)}
+                placeholder="Tier"
+                className="w-20 px-3 py-2 border rounded text-sm"
+              />
+              <button
+                onClick={() => {
+                  if (!tierAddr || tierValue === "" || !mandateId) return;
+                  writeContract({
+                    address: mandateAddress,
+                    abi: mandateAbi,
+                    functionName: "setCounterpartyTier",
+                    args: [mandateId, tierAddr as `0x${string}`, BigInt(tierValue)],
+                  });
+                }}
+                disabled={isPending || isConfirming}
+                className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50"
+              >
+                Set
               </button>
             </div>
           </div>

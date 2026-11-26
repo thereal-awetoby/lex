@@ -612,6 +612,86 @@ contract MandateTest is Test {
         mandate.approveException(exceptionId, bytes32(0));
     }
 
+    function test_tier_enforced() public {
+        IMandate.Rules memory rules = _defaultRules();
+        rules.minCounterpartyTier = 2;
+        mandateId = _createMandateWithRules(rules, new address[](0));
+        _fundMandate(mandateId, 500e6);
+
+        (bool ok, uint16 reason) = mandate.canSpend(mandateId, 50e6, counterparty, bytes32("compute"));
+        assertFalse(ok);
+        assertEq(reason, 6); // TIER_TOO_LOW
+
+        vm.prank(owner);
+        mandate.setCounterpartyTier(mandateId, counterparty, 1);
+        (ok, reason) = mandate.canSpend(mandateId, 50e6, counterparty, bytes32("compute"));
+        assertEq(reason, 6);
+
+        vm.prank(owner);
+        mandate.setCounterpartyTier(mandateId, counterparty, 2);
+        vm.prank(agent);
+        uint256 receiptId = mandate.spend(mandateId, 50e6, counterparty, bytes32("compute"), bytes32(0), bytes32(0));
+        assertEq(uint8(mandate.getReceipt(receiptId).decision), uint8(IMandate.Decision.ALLOW));
+    }
+
+    function test_tier_onlyOwnerSets() public {
+        mandateId = _createDefaultMandate();
+        vm.prank(agent);
+        vm.expectRevert("NOT_OWNER");
+        mandate.setCounterpartyTier(mandateId, counterparty, 5);
+    }
+
+    function test_tier_refusalAndEscrow() public {
+        IMandate.Rules memory rules = _defaultRules();
+        rules.minCounterpartyTier = 2;
+        mandateId = _createMandateWithRules(rules, new address[](0));
+        _fundMandate(mandateId, 500e6);
+
+        vm.prank(agent);
+        uint256 receiptId = mandate.spend(mandateId, 50e6, counterparty, bytes32("compute"), bytes32(0), bytes32(0));
+        assertEq(uint8(mandate.getReceipt(receiptId).decision), uint8(IMandate.Decision.REFUSE));
+        assertEq(mandate.getReceipt(receiptId).reasonCode, 6);
+
+        vm.prank(agent);
+        vm.expectRevert("SPEND_CHECK_FAILED:6");
+        mandate.payWithEscrow(mandateId, counterparty, 50e6, bytes32("s"), bytes32("r"), 3600);
+    }
+
+    function test_tier_isIsolatedByMandate() public {
+        IMandate.Rules memory rules = _defaultRules();
+        rules.minCounterpartyTier = 2;
+        uint256 first = _createMandateWithRules(rules, new address[](0));
+        uint256 second = _createMandateWithRules(rules, new address[](0));
+        _fundMandate(first, 500e6);
+        _fundMandate(second, 500e6);
+        vm.prank(owner);
+        mandate.setCounterpartyTier(first, counterparty, 2);
+        (bool firstOk,) = mandate.canSpend(first, 50e6, counterparty, bytes32("compute"));
+        (bool secondOk, uint16 reason) = mandate.canSpend(second, 50e6, counterparty, bytes32("compute"));
+        assertTrue(firstOk);
+        assertFalse(secondOk);
+        assertEq(reason, 6);
+        assertEq(mandate.counterpartyTier(first, counterparty), 2);
+        assertEq(mandate.counterpartyTier(second, counterparty), 0);
+    }
+
+    function test_tier_governedExceptionCanOverride() public {
+        IMandate.Rules memory rules = _defaultRules();
+        rules.minCounterpartyTier = 2;
+        rules.exceptionMode = IMandate.ExceptionMode.GOVERNED;
+        rules.exceptionApprovalThreshold = 1;
+        address[] memory ap = new address[](1);
+        ap[0] = approver1;
+        mandateId = _createMandateWithRules(rules, ap);
+        _fundMandate(mandateId, 500e6);
+        vm.prank(agent);
+        uint256 exceptionId = mandate.requestException(mandateId, 50e6, counterparty, bytes32("compute"), "tier exception");
+        vm.prank(approver1);
+        uint256 receiptId = mandate.approveException(exceptionId, bytes32(0));
+        assertEq(uint8(mandate.getReceipt(receiptId).decision), uint8(IMandate.Decision.EXCEPTION));
+        assertEq(usdc.balanceOf(counterparty), 50e6);
+    }
+
     function test_canSpend_denylistNotMaskedByAllowlist() public {
         mandateId = _createDefaultMandate();
         _fundMandate(mandateId, 500e6);

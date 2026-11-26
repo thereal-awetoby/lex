@@ -1,120 +1,127 @@
 # Lex
 
-On-chain spending law for AI agents on HashKey Chain.
+Spending mandates for AI agents on HashKey Chain.
 
-Portable mandates with non-bypassable enforcement, dual settlement rails (HSP + direct), and receipts for every decision.
+An owner funds a mandate with a token such as USDC.e or USDT and binds one or more agent keys to it. Agents can make payments from the mandate contract under the owner's rules. Authorized spend attempts that fail a policy check produce on-chain refusal receipts.
 
-## Architecture
+Payments settle through ERC-20 transfers. The SDK also checks HSP (HashKey Settlement Protocol) Cart Mandates and pays them through the same `spend` path.
 
-```
-contracts/     Foundry — Solidity 0.8.24
-  src/
-    Mandate.sol          Single contract, mandate-ID pattern
-    MandateFactory.sol   Deploys the Mandate contract
-    interfaces/          IMandate.sol, IERC20.sol
-    mocks/               MockERC20.sol (test only)
-  test/
-    Mandate.t.sol        Unit + fuzz + invariant tests
+## How enforcement works
 
-sdk/           TypeScript SDK (viem)
-  src/
-    index.ts             Lex class — read + write methods
-    abi.ts               Contract ABIs
-    constants.ts         Chain defs, reason codes, categories
+Funds sit in the Mandate contract, not in the agent's wallet. There are four ways for them to leave:
 
-mcp/           MCP server for AI agent integration
-  src/
-    server.ts            8 tools: get_mandate, can_pay, pay, ...
+| Path | Who calls | Checked against |
+|------|-----------|-----------------|
+| `spend` | bound agent | spend rules |
+| approved exception | owner, approvers, or a bound agent when executing a delayed exception | paused status, denylist, absolute ceiling, balance |
+| escrow release | owner, counterparty or bound agent, after payer-side attestation | spend rules are checked when the escrow is locked |
+| `withdraw` | owner | unspent mandate balance; sent to owner |
 
-app/           Next.js owner console + public verify pages
-  src/
-    app/
-      page.tsx           Create / manage mandates
-      r/[receiptId]/     Public receipt verification
-      m/[mandateId]/     Public mandate summary
-    components/          ConnectWallet, CreateMandate, MandateView
-    hooks/               useMandate, useCanSpend, useReceipt, ...
-    config/              wagmi, contracts
+Exception execution can override the other spend rules, including the minimum counterparty tier. Escrow release does not re-check rules changed after the lock.
 
-scripts/       Deploy + exercise scripts
-docs/          THREAT-MODEL, HSP, SDK, RECEIPTS, DEMO, MAINNET_PROOFS
-```
+## Rules
 
-## Rules Engine
+Each mandate stores:
 
-Each mandate enforces:
+- Per-payment cap
+- Rolling window cap (default 24h)
+- Per-counterparty cap and per-category cap, per window
+- Cooldown between payments
+- Active hours (UTC, can wrap midnight)
+- Allowlist and denylist
+- Minimum counterparty tier (owner assigns tiers per counterparty)
+- Absolute ceiling: the largest single payment possible, even through an exception
+- Rule changes can be timelocked; the owner can update lists and tiers independently
 
-- Per-transaction cap
-- Rolling 24h window cap
-- Per-counterparty cap
-- Per-category cap
-- Cooldown between spends
-- Active time windows (with midnight wrap)
-- Allowlist / denylist
-- Minimum counterparty tier
-- Absolute ceiling (hard upper bound)
+`canSpend(mandateId, amount, counterparty, category)` is a free view call that returns whether the rules allow a payment and a reason code. It does not check whether a caller is a bound agent.
 
-Exception model: **Hard Law** (no exceptions) or **Governed** (N-of-M approval / time-delay).
+## Exceptions
 
-Denylist is absolute — no code path, including exceptions, can send funds to a denylisted address.
+- **Hard law:** no exceptions.
+- **Governed:** an agent can request an exception. It executes after the configured approval threshold, or after one approval plus a configured time delay, or on the owner's approval if neither is set. Paused status, denylist, absolute ceiling and balance are checked again at execution time.
 
 ## Receipts
 
-Every spend decision produces an on-chain receipt — ALLOW, REFUSE, or EXCEPTION — with the full context: amount, counterparty, reason code, rule hash, settlement rail.
+An authorized `spend` that reaches the policy check writes a receipt for an allowed or refused decision. A paused mandate records `REFUSE / PAUSED`. Executed exceptions and escrow locks also write receipts. Calls can still revert, for example on authorization or token transfer failure; a refused escrow lock reverts rather than writing a refusal receipt.
 
-Public verification at `/r/:receiptId` — no auth required.
+Receipt, exception and escrow IDs are unique across mandates within one Mandate contract. A receipt includes a hash of the `Rules` struct, not the separately managed allowlist, denylist or counterparty tiers.
 
-## Settlement
+Public pages, no wallet needed:
 
-- **Direct**: ERC-20 transfer on-chain (USDC.e / USDT)
-- **HSP**: HashKey Payment gateway (event interface defined, pending gateway access)
-- **HSP then Direct**: try HSP, fall back to direct
+- `/r/:receiptId`: receipt details and the transaction on HashKey Scan, when its event is found
+- `/m/:mandateId`: rules, a `canSpend` payment checker, and decision activity
 
 ## Escrow
 
-Lock → Attest → Release | Refund. Same rules engine applies at lock time. Timeout-based refund returns funds to mandate.
+`payWithEscrow` locks funds for a counterparty under the same spend rules as a direct payment.
+
+- The owner or a bound agent can attest delivery. A counterparty that also holds one of these roles can attest its own escrow.
+- An attested escrow can be released to the counterparty.
+- An unattested escrow can be refunded to the mandate after its timeout; it cannot be refunded before then.
+
+## HSP
+
+- **Paying:** `payHspCart` checks the cart hash, ES256K signature against a supplied signer, expiry, chain and token, then pays through `spend`. An explicit unverified mode exists for testing. The MCP server restricts signer selection to an operator-configured trusted list.
+- **Selling:** `HspMerchant` signs Cart Mandates, creates orders through the HSP merchant API, checks payment status, and verifies webhooks. Integration with the merchant API has not been verified here.
+
+See [docs/HSP.md](docs/HSP.md).
+
+## Components
+
+```
+contracts/   Solidity 0.8.24, Foundry. Mandate.sol, MandateFactory.sol, tests
+sdk/         TypeScript SDK (viem): Lex client and HSP helpers
+mcp/         MCP server for agents to check payments, spend and request exceptions
+app/         Next.js owner console and public receipt and mandate pages
+scripts/     deploy and exercise scripts
+docs/        threat model, HSP, SDK, receipts, demo, mainnet proofs
+```
+
+MCP tools: `get_mandate`, `can_pay`, `pay`, `pay_hsp_cart`, `request_exception`, `get_receipt`, `list_receipts`, `get_exception`, `get_escrow`. The contract supports escrow operations and delayed exception execution, but those write tools are not currently exposed by the MCP server.
 
 ## Network
 
-- Chain: HashKey Chain (ID 177)
-- RPC: https://mainnet.hsk.xyz
-- Explorer: https://hashkeyscan.io
-- USDC.e: `0x054ed45810DbBAb8B27668922D110669c9D88D0a`
-- USDT: `0xf1b50ed67a9e2cc94ad3c477779e2d4cbfff9029`
+| | Mainnet | Testnet |
+|---|---|---|
+| Chain ID | 177 | 133 |
+| RPC | https://mainnet.hsk.xyz | https://testnet.hsk.xyz |
+| Explorer | https://hashkeyscan.io | https://testnet.hashkeyscan.io |
+| USDC.e / USDC | `0x054ed45810DbBAb8B27668922D110669c9D88D0a` | `0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6` |
+| USDT | `0xf1b50ed67a9e2cc94ad3c477779e2d4cbfff9029` | `0x372325443233fEbaC1F6998aC750276468c83CC6` |
 
-## Quick Start
+[docs/MAINNET_PROOFS.md](docs/MAINNET_PROOFS.md) describes how to generate proofs; its deployment and transaction tables have not been filled in.
+
+## Run it
 
 ```bash
-# Contracts
-cd contracts && forge build && forge test -vvv
-
-# SDK
-cd sdk && npm install
-
-# MCP server
-cd mcp && npm install
-
-# Owner console
-cd app && npm install && npm run dev
-
-# Deploy
-cp .env.example .env  # fill in keys
+# contracts
 cd contracts
-forge create src/MandateFactory.sol:MandateFactory \
-  --rpc-url $HSK_RPC_URL \
-  --private-key $DEPLOYER_PRIVATE_KEY
+git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
+forge test -vvv
+
+# deploy (configure the key locally; never share it)
+export DEPLOYER_PRIVATE_KEY=0x...
+forge script script/Deploy.s.sol --rpc-url https://mainnet.hsk.xyz --broadcast
+
+# sdk, then app
+cd ../sdk && npm install && npm run build
+cd ../app && npm install && npm run dev
+
+# mcp server
+cd ../mcp && npm install
+LEX_MANDATE_ADDRESS=0x... LEX_AGENT_PRIVATE_KEY=0x... npx tsx src/server.ts
 ```
 
-See [docs/DEMO.md](docs/DEMO.md) for the full walkthrough.
+Environment variables are listed in `.env.example`. CI builds and tests the contracts, type-checks the SDK, and builds the app on every push.
 
 ## Docs
 
-- [Threat Model](docs/THREAT-MODEL.md)
-- [HSP Integration](docs/HSP.md)
-- [SDK Reference](docs/SDK.md)
+- [Threat model](docs/THREAT-MODEL.md)
+- [HSP](docs/HSP.md)
+- [SDK](docs/SDK.md)
 - [Receipts](docs/RECEIPTS.md)
-- [Demo Walkthrough](docs/DEMO.md)
-- [Mainnet Proofs](docs/MAINNET_PROOFS.md)
+- [Demo](docs/DEMO.md)
+- [Mainnet proofs](docs/MAINNET_PROOFS.md)
 
 ## License
 
