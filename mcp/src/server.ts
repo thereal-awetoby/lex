@@ -12,6 +12,14 @@ const MANDATE_ADDRESS = process.env.LEX_MANDATE_ADDRESS as `0x${string}`;
 const RPC_URL = process.env.HSK_RPC_URL || "https://mainnet.hsk.xyz";
 const AGENT_KEY = process.env.LEX_AGENT_PRIVATE_KEY as `0x${string}` | undefined;
 
+// Trusted HSP merchant signers. A cart is only paid if its signature recovers to one of these.
+// The agent can pick which one applies, but cannot add new ones: the cart (and anything it
+// says) comes from the merchant, so a signer named in a tool call is not trusted on its own.
+const TRUSTED_HSP_SIGNERS = (process.env.LEX_HSP_MERCHANT_SIGNERS || process.env.LEX_HSP_MERCHANT_SIGNER || "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
 const lex = new Lex({ mandateAddress: MANDATE_ADDRESS, rpcUrl: RPC_URL });
 
 if (AGENT_KEY) {
@@ -135,7 +143,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           merchantSigner: {
             type: "string",
             description:
-              "Merchant signer address; the ES256K signature must recover to it. Defaults to LEX_HSP_MERCHANT_SIGNER.",
+              "Which trusted merchant signer to verify against. Must be in LEX_HSP_MERCHANT_SIGNERS. Optional if only one is configured.",
           },
         },
         required: ["mandateId", "cartMandate", "category"],
@@ -242,11 +250,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "pay_hsp_cart": {
         const cart = JSON.parse(args!.cartMandate as string) as HspCartMandate;
+        const requested = ((args!.merchantSigner as string) || "").trim().toLowerCase();
+        let signer: string | undefined;
+        if (requested) {
+          if (!TRUSTED_HSP_SIGNERS.includes(requested)) {
+            return {
+              content: [{ type: "text", text: "merchantSigner is not in LEX_HSP_MERCHANT_SIGNERS; refusing to pay" }],
+              isError: true,
+            };
+          }
+          signer = requested;
+        } else if (TRUSTED_HSP_SIGNERS.length === 1) {
+          signer = TRUSTED_HSP_SIGNERS[0];
+        } else if (TRUSTED_HSP_SIGNERS.length > 1) {
+          return {
+            content: [{ type: "text", text: "Several trusted signers configured; pass merchantSigner to pick one" }],
+            isError: true,
+          };
+        }
         const result = await payHspCart(lex, BigInt(args!.mandateId as string), cart, {
           category: encodeCategory(args!.category as string),
-          merchantSigner:
-            ((args!.merchantSigner as `0x${string}`) || (process.env.LEX_HSP_MERCHANT_SIGNER as `0x${string}`)) ||
-            undefined,
+          merchantSigner: signer as `0x${string}` | undefined,
           allowUnverifiedMerchant: process.env.LEX_HSP_ALLOW_UNVERIFIED === "true",
         });
         if (!result.check.ok) {

@@ -36,7 +36,7 @@ const { check, receiptId } = await payHspCart(lex, 1n, cartMandate, {
 if (!check.ok) console.log(check.errors);
 ```
 
-MCP tool: `pay_hsp_cart` takes `{ mandateId, cartMandate (JSON), category, merchantSigner? }`. `merchantSigner` falls back to `LEX_HSP_MERCHANT_SIGNER`. Set `LEX_HSP_ALLOW_UNVERIFIED=true` only for testing.
+MCP tool: `pay_hsp_cart` takes `{ mandateId, cartMandate (JSON), category, merchantSigner? }`. Trusted signers are set by the operator in `LEX_HSP_MERCHANT_SIGNERS` (comma-separated). The agent's `merchantSigner` argument can only pick one of them, never add one, because the cart and anything written in it come from the merchant. Set `LEX_HSP_ALLOW_UNVERIFIED=true` only for testing.
 
 ## Merchant side: an agent sells through HSP
 
