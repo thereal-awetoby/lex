@@ -32,3 +32,19 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npx tsc --noEmit
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build SDK
+        working-directory: sdk
+        run: npm install && npm run build
+      - name: Build app
+        working-directory: app
+        env:
+          NEXT_PUBLIC_MANDATE_ADDRESS: "0x0000000000000000000000000000000000000001"
+        run: npm install && npm run build

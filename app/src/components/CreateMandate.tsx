@@ -154,7 +154,7 @@ export function CreateMandate() {
         <span className="text-sm text-gray-500">Token</span>
         <select
           value={form.token}
-          onChange={(e) => setForm({ ...form, token: e.target.value })}
+          onChange={(e) => setForm({ ...form, token: e.target.value as `0x${string}` })}
           className="w-full mt-1 px-3 py-2 border rounded"
         >
           <option value={TOKENS.USDC_E}>USDC.e</option>

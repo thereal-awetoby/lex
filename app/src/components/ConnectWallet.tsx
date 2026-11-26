@@ -1,7 +1,6 @@
 "use client";
 
-import { useAccount, useConnect, useDisconnect, useSwitchChain } from "wagmi";
-import { injected } from "wagmi/connectors";
+import { injected, useAccount, useConnect, useDisconnect, useSwitchChain } from "wagmi";
 import { hskMainnet, hskTestnet } from "@/config/wagmi";
 
 export function ConnectWallet() {
