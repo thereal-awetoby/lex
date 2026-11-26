@@ -246,6 +246,55 @@ export const MANDATE_ABI = [
     outputs: [],
   },
 
+  {
+    name: "executeException",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "exceptionId", type: "uint256" },
+      { name: "hspOrderId", type: "bytes32" },
+    ],
+    outputs: [{ name: "receiptId", type: "uint256" }],
+  },
+  {
+    name: "approvers",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "mandateId", type: "uint256" },
+      { name: "approver", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "nextReceiptId",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "nextExceptionId",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "nextEscrowId",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "nextMandateId",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+
   // ── Escrow ──
   {
     name: "payWithEscrow",
