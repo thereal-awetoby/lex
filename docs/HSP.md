@@ -1,61 +1,86 @@
 # HSP Integration
 
-## Overview
+HSP (HashKey Settlement Protocol) is HashKey's settlement layer for agent and merchant payments. It builds on AP2 and uses x402-style payment requests. Lex supports it from both sides: an agent paying an HSP merchant, and an agent selling through HSP.
 
-HSP (HashKey Payment) is HashKey Chain's fiat settlement gateway. Lex mandates support dual settlement rails: direct on-chain ERC-20 transfer and HSP-mediated settlement.
+## Payer side: an agent pays an HSP cart
 
-## Settlement Rails
+An HSP merchant issues a **Cart Mandate**:
 
 ```
-SettlementRail.DIRECT         — ERC-20 transfer on-chain
-SettlementRail.HSP            — HSP gateway settlement
-SettlementRail.HSP_THEN_DIRECT — try HSP, fall back to direct
+contents
+  id, merchant_name, cart_expiry, user_cart_confirmation_required
+  payment_request
+    method_data[0].data: x402Version, network, chain_id, contract_address, pay_to, coin
+    details: id (payment request id), display_items, total.amount.value
+merchant_authorization   ES256K JWT, claims include cart_hash = sha256(canonical JSON of contents)
 ```
 
-## How It Works
+`payHspCart(lex, mandateId, cart, { category })` does the following:
 
-### Direct Settlement (implemented)
+1. Recomputes the cart hash and checks it against `cart_hash` in the merchant JWT
+2. Checks JWT and cart expiry, chain id, and that `contract_address` is the mandate's token
+3. Optionally checks that the ES256K signature recovers to a known merchant signer
+4. Calls `spend(mandateId, amount, pay_to, category, ref = cartHash, hspOrderId = keccak256(paymentRequestId))`
 
-1. Agent calls `spend()` or `payWithEscrow()`
-2. Contract transfers ERC-20 tokens to counterparty address
-3. Receipt records the spend with `Decision.ALLOW`
+The mandate rules engine decides, the same as for any other payment. A refusal still writes a receipt. On ALLOW, the receipt binds the on-chain transfer to the HSP payment request through `hspOrderId` and `ref`. Anyone can match a receipt to an HSP order by hashing the payment request id.
 
-### HSP Settlement (integration point)
+The HSP path does not bypass anything: the only way funds leave a mandate is `spend`, an approved exception, or a released escrow.
 
-HSP settlement follows the same mandate rules engine but routes the actual value transfer through HashKey's payment infrastructure:
+```ts
+import { Lex, payHspCart, CATEGORIES } from "@lex/sdk";
 
-1. Agent calls spend with HSP rail preference
-2. Contract validates all mandate rules (caps, windows, denylist, etc.)
-3. If ALLOW: emits `SpendDecision` with `Decision.ALLOW` and the provided `hspOrderId`
-4. HSP relayer picks up the event and initiates fiat settlement
-5. HSP confirms settlement back on-chain
-6. Receipt updated with settlement confirmation
+const { check, receiptId } = await payHspCart(lex, 1n, cartMandate, {
+  category: CATEGORIES.DATA,
+  merchantSigner: "0xMerchantSigner", // optional
+});
+if (!check.ok) console.log(check.errors);
+```
 
-### HSP + Direct Fallback
+MCP tool: `pay_hsp_cart` takes `{ mandateId, cartMandate (JSON), category, merchantSigner? }`.
 
-For `HSP_THEN_DIRECT`:
-1. Attempt HSP settlement
-2. If HSP unavailable or times out, fall back to direct ERC-20 transfer
-3. Receipt records which rail was actually used
+## Merchant side: an agent sells through HSP
 
-## Current Status
+`HspMerchant` wraps the HSP merchant API.
 
-- Direct settlement: fully implemented and tested
-- HSP integration: event interface defined, awaiting HSP gateway API access on HSK mainnet
-- The mandate rules engine is rail-agnostic — the same caps, windows, denylist, and exception logic apply regardless of settlement method
+| Method | Call |
+|--------|------|
+| `buildCartMandate(...)` | Builds `contents` and signs `merchant_authorization` (ES256K, raw r‖s, base64url) |
+| `createOrder(cart, redirectUrl?)` | `POST /api/v1/merchant/orders` with `{ cart_mandate, redirect_url }`. Returns `paymentRequestId`, `paymentUrl` |
+| `getPaymentStatus(id)` | `GET /api/v1/merchant/payments?payment_request_id=` |
+| `verifyWebhook(rawBody, signature)` | HMAC-SHA256 with the app secret, constant-time compare |
+
+Requests are signed with these headers:
+
+```
+X-App-Key    app key
+X-Timestamp  unix seconds
+X-Nonce      32 hex chars
+X-Signature  hex HMAC-SHA256(appSecret, METHOD\nPATH\nQUERY\nsha256(body)\nTIMESTAMP\nNONCE)
+```
+
+Payment states: `payment-required`, `payment-submitted`, `payment-verified`, `payment-processing`, `payment-safe`, `payment-included`, `payment-successful`, `payment-failed`.
+
+## Agent-to-agent flow
+
+1. Seller agent: `buildCartMandate` → `createOrder` → sends the cart to the buyer
+2. Buyer agent: `payHspCart` through its Lex mandate → receipt with `hspOrderId`
+3. Seller agent: `getPaymentStatus` or webhook → `payment-successful`, with a tx hash matching the Lex receipt's transaction
+
+## Settlement rails
+
+`Rules.preferredRail` records the owner's preference: `HSP`, `DIRECT`, or `HSP_THEN_DIRECT`. Both rails settle through the same `spend` path, so caps, windows, denylist and exceptions apply the same way. With `HSP_THEN_DIRECT`, an agent pays HSP carts when it has one and pays the counterparty directly otherwise.
 
 ## Configuration
 
-No additional configuration needed for direct settlement. HSP requires:
-
 ```env
-HSP_GATEWAY_URL=       # HSP API endpoint (TBD — pending HSK team)
-HSP_API_KEY=           # API credentials
-HSP_WEBHOOK_SECRET=    # For settlement confirmations
+HSP_BASE_URL=https://merchant-qa.hashkeymerchant.com   # QA / testnet
+HSP_APP_KEY=
+HSP_APP_SECRET=
+HSP_MERCHANT_NAME=
+HSP_MERCHANT_PRIVATE_KEY=     # secp256k1 key that signs Cart Mandates
+HSP_NETWORK=hashkey-testnet
 ```
 
-## Security
+Testnet (chain 133) tokens: USDC `0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6`, USDT `0x372325443233fEbaC1F6998aC750276468c83CC6`.
 
-- HSP settlement still requires the agent to pass all mandate rule checks
-- HSP relayer is a separate trust boundary — it cannot initiate spends, only fulfill already-approved ones
-- Denylist enforcement happens at the mandate contract level, before any rail is invoked
+Merchant credentials come from the HashKey merchant platform.
