@@ -19,7 +19,7 @@ merchant_authorization   ES256K JWT, claims include cart_hash = sha256(canonical
 
 1. Recomputes the cart hash and checks it against `cart_hash` in the merchant JWT
 2. Checks JWT and cart expiry, chain id, and that `contract_address` is the mandate's token
-3. Optionally checks that the ES256K signature recovers to a known merchant signer
+3. Checks that the ES256K signature recovers to the expected merchant signer. Without a signer the cart is rejected, unless `allowUnverifiedMerchant: true` is passed (testing only: an unsigned check proves the cart is self-consistent, not who issued it)
 4. Calls `spend(mandateId, amount, pay_to, category, ref = cartHash, hspOrderId = keccak256(paymentRequestId))`
 
 The mandate rules engine decides, the same as for any other payment. A refusal still writes a receipt. On ALLOW, the receipt binds the on-chain transfer to the HSP payment request through `hspOrderId` and `ref`. Anyone can match a receipt to an HSP order by hashing the payment request id.
@@ -31,12 +31,12 @@ import { Lex, payHspCart, CATEGORIES } from "@lex/sdk";
 
 const { check, receiptId } = await payHspCart(lex, 1n, cartMandate, {
   category: CATEGORIES.DATA,
-  merchantSigner: "0xMerchantSigner", // optional
+  merchantSigner: "0xMerchantSigner",
 });
 if (!check.ok) console.log(check.errors);
 ```
 
-MCP tool: `pay_hsp_cart` takes `{ mandateId, cartMandate (JSON), category, merchantSigner? }`.
+MCP tool: `pay_hsp_cart` takes `{ mandateId, cartMandate (JSON), category, merchantSigner? }`. `merchantSigner` falls back to `LEX_HSP_MERCHANT_SIGNER`. Set `LEX_HSP_ALLOW_UNVERIFIED=true` only for testing.
 
 ## Merchant side: an agent sells through HSP
 
