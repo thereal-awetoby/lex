@@ -21,6 +21,7 @@ export function CreateMandate() {
     activeWindowStart: "0",
     activeWindowEnd: "0",
     timelockForRuleChange: "0",
+    minCounterpartyTier: "0",
     exceptionMode: "0", // HARD_LAW
     token: TOKENS.USDC_E,
     agent: "",
@@ -44,7 +45,7 @@ export function CreateMandate() {
       cooldownSeconds: BigInt(form.cooldownSeconds),
       activeWindowStart: 0n,
       activeWindowEnd: 0n,
-      minCounterpartyTier: 0n,
+      minCounterpartyTier: BigInt(form.minCounterpartyTier || "0"),
       absoluteCeiling: toUnits(form.absoluteCeiling),
       exceptionMode: Number(form.exceptionMode),
       preferredRail: 0, // HSP
@@ -136,6 +137,15 @@ export function CreateMandate() {
             type="number"
             value={form.absoluteCeiling}
             onChange={(e) => setForm({ ...form, absoluteCeiling: e.target.value })}
+            className="w-full mt-1 px-3 py-2 border rounded"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm text-gray-500">Min counterparty tier (0 = off)</span>
+          <input
+            type="number"
+            value={form.minCounterpartyTier}
+            onChange={(e) => setForm({ ...form, minCounterpartyTier: e.target.value })}
             className="w-full mt-1 px-3 py-2 border rounded"
           />
         </label>

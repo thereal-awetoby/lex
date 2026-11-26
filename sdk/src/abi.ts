@@ -283,6 +283,28 @@ export const MANDATE_ABI = [
     outputs: [],
   },
 
+  {
+    name: "setCounterpartyTier",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "mandateId", type: "uint256" },
+      { name: "counterparty", type: "address" },
+      { name: "tier", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    name: "counterpartyTier",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "mandateId", type: "uint256" },
+      { name: "counterparty", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+
   // ── Withdraw ──
   {
     name: "withdraw",

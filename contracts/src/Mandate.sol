@@ -30,6 +30,7 @@ contract Mandate is IMandate {
     mapping(uint256 => mapping(address => bool)) public allowlist;
     mapping(uint256 => mapping(address => bool)) public denylist;
     mapping(uint256 => bool) public allowlistEnabled;
+    mapping(uint256 => mapping(address => uint256)) public counterpartyTier; // mandateId => counterparty => tier
     mapping(uint256 => mapping(address => uint256)) public counterpartySpent;
     mapping(uint256 => mapping(bytes32 => uint256)) public categorySpent;
     mapping(uint256 => mapping(address => uint256)) public counterpartyLastReset;
@@ -163,6 +164,12 @@ contract Mandate is IMandate {
         emit DenylistUpdated(mandateId, addr, denied);
     }
 
+    /// @notice Owner-assigned trust tier for a counterparty. Spends need tier >= rules.minCounterpartyTier.
+    function setCounterpartyTier(uint256 mandateId, address counterparty, uint256 tier) external onlyOwner(mandateId) {
+        counterpartyTier[mandateId][counterparty] = tier;
+        emit CounterpartyTierSet(mandateId, counterparty, tier);
+    }
+
     // ── Approver management ────────────────────────────────────────────
     function addApprover(uint256 mandateId, address approver) external onlyOwner(mandateId) {
         require(!approvers[mandateId][approver], "ALREADY_APPROVER");
@@ -262,6 +269,10 @@ contract Mandate is IMandate {
         // Allowlist
         if (allowlistEnabled[mandateId] && !allowlist[mandateId][counterparty])
             return (false, 4); // NOT_ALLOWLISTED
+
+        // Counterparty tier
+        if (m.rules.minCounterpartyTier > 0 && counterpartyTier[mandateId][counterparty] < m.rules.minCounterpartyTier)
+            return (false, 6); // TIER_TOO_LOW
 
         // Counterparty cap
         if (m.rules.perCounterpartyCap > 0) {

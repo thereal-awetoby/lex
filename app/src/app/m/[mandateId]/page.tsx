@@ -46,6 +46,10 @@ export default function MandatePublicPage() {
         <Row label="Absolute ceiling" value={fmt(rules.absoluteCeiling)} />
         <Row label="Cooldown" value={`${rules.cooldownSeconds.toString()}s`} />
         <Row
+          label="Min counterparty tier"
+          value={rules.minCounterpartyTier > 0n ? rules.minCounterpartyTier.toString() : "none"}
+        />
+        <Row
           label="Exceptions"
           value={
             Number(rules.exceptionMode) === 0
@@ -99,7 +103,7 @@ function PaymentCheck({ mandateId }: { mandateId: bigint }) {
   } catch {
     parsed = undefined;
   }
-  const valid = parsed !== undefined && isAddress(counterparty) && category.length > 0 && category.length <= 32;
+  const valid = parsed !== undefined && isAddress(counterparty) && category.length > 0 && new TextEncoder().encode(category).length <= 32;
 
   const { data, isFetching } = useCanSpend(
     valid ? mandateId : undefined,

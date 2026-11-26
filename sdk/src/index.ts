@@ -379,6 +379,20 @@ export class Lex {
     return hash;
   }
 
+  async setCounterpartyTier(mandateId: bigint, counterparty: `0x${string}`, tier: bigint): Promise<`0x${string}`> {
+    const wallet = this.requireWallet();
+    const hash = await wallet.writeContract({
+      address: this.mandateAddress,
+      abi: MANDATE_ABI,
+      functionName: "setCounterpartyTier",
+      args: [mandateId, counterparty, tier],
+      chain: this.publicClient.chain,
+      account: wallet.account!,
+    });
+    await this.publicClient.waitForTransactionReceipt({ hash });
+    return hash;
+  }
+
   async proposeRules(mandateId: bigint, newRules: MandateRules): Promise<`0x${string}`> {
     const wallet = this.requireWallet();
     const hash = await wallet.writeContract({

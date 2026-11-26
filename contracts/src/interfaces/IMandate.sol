@@ -127,6 +127,7 @@ interface IMandate {
     event DenylistUpdated(uint256 indexed mandateId, address addr, bool denied);
     event ApproverAdded(uint256 indexed mandateId, address approver);
     event ApproverRemoved(uint256 indexed mandateId, address approver);
+    event CounterpartyTierSet(uint256 indexed mandateId, address indexed counterparty, uint256 tier);
 
     // ── View ───────────────────────────────────────────────────────────
     function canSpend(
