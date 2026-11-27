@@ -11,9 +11,9 @@ A receipt is the on-chain record of one spend decision. Receipts are stored in t
 | `payWithEscrow` by a bound agent | ALLOW (funds locked) or REFUSE (nothing locked) |
 | An exception executes, through `approveException` reaching its threshold or `executeException` | EXCEPTION |
 
-A refusal is a normal outcome: the transaction succeeds and the receipt records the reason. No receipt is written when a call reverts. That happens when the caller is not a bound agent (`NOT_AGENT`), when an escrow has no timeout (`TIMEOUT_REQUIRED`), or when a token transfer fails. Releasing or refunding an escrow does not write a receipt. It emits `EscrowReleased` or `EscrowRefunded`.
+A refusal is a normal outcome: the transaction succeeds and the receipt records the reason. No receipt is written when a call reverts. Examples include an unbound caller or invalid intent signature (`NOT_AGENT`), a used intent or wrong nonce (`INTENT_USED`), an expired intent (`INTENT_EXPIRED`), an escrow with no timeout (`TIMEOUT_REQUIRED`), or a failed token transfer. Releasing or refunding an escrow does not write a receipt. It emits `EscrowReleased` or `EscrowRefunded`.
 
-Receipt ids are unique across all mandates.
+Receipt IDs are unique across all mandates in one Mandate contract, not across deployments or chains.
 
 ## Fields
 
@@ -60,7 +60,9 @@ Rules are checked in the order below, and the first rule that fails is the reaso
 | 8 | WINDOW_CLOSED | Outside the mandate's active hours | Yes |
 | 14 | INSUFFICIENT_FUNDS | Not enough balance | No |
 | 9 | EXCEPTION_REQUIRED | Governed mandate: refused, and an exception can be requested | |
-| 13 | AGENT_NOT_BOUND | Reserved. A spend from an unbound caller reverts with `NOT_AGENT`, so no receipt carries this code | |
+| 13 | AGENT_NOT_BOUND | Views only: an unbound caller or signer reverts with `NOT_AGENT` | |
+| 18 | INTENT_EXPIRED | View only: an expired intent reverts on execution | |
+| 19 | INTENT_USED | View only: the intent was used or its nonce is not the next nonce | |
 
 `canSpend` checks mandate rules; `canAgentSpend` additionally checks binding, heartbeat and agent sub-cap. `canExecuteIntent` also checks signature, nonce and deadline. Expired and used intents revert on execution (view codes 18 and 19). A valid refused intent consumes its nonce.
 
@@ -68,7 +70,7 @@ In a governed mandate, a refusal that an exception could override is recorded as
 
 ## Policy hash
 
-`policyHash` identifies the exact rules a decision was made under. To check it, read the mandate's rules, compute `keccak256(abi.encode(mandateId, rules))`, and compare. Every rule change emits `RulesUpdated(mandateId, newPolicyHash)`, so an older hash can be matched to the change that introduced it.
+`policyHash` identifies the exact rules a decision was made under. To check it, read the mandate's rules, compute `keccak256(abi.encode(mandateId, rules))`, and compare. An applied rule change emits `RulesUpdated(mandateId, newPolicyHash)`; a queued change emits `RuleChangeQueued(mandateId, newPolicyHash, effectiveAt)`.
 
 Sub-caps, envelopes, heartbeat policy, tiers and lists are not included in the policy hash. Their updates emit separate events. A soft-rule refusal can mask insufficient balance in the dry run; exception execution still checks balance.
 
@@ -86,13 +88,14 @@ event SpendDecision(
 );
 event ExceptionSpend(uint256 indexed mandateId, uint256 indexed exceptionId, uint256 indexed receiptId);
 event EscrowLocked(uint256 indexed mandateId, uint256 indexed escrowId, uint256 amount);
+event SpendIntentExecuted(uint256 indexed mandateId, address indexed agent, bytes32 digest, uint256 receiptId, address relayer);
 ```
 
-There is one `SpendDecision` per receipt. Filtering by `receiptId` finds the transaction that wrote a receipt, which is how the app links it on HashKey Scan.
+There is one `SpendDecision` per receipt. Filtering by `receiptId` finds the transaction that wrote a receipt, which is how the app links it on the configured explorer. Intent receipts also show the submitter when its event is found.
 
 ## Reading receipts
 
-- Contract: `getReceipt(receiptId)`
+- Contract: `getReceipt(receiptId)`, `reasonCodeString(code)`
 - SDK: `lex.getReceipt(receiptId)`, `lex.getSpendDecisions(mandateId)`
 - MCP: `get_receipt`, `list_receipts`
 - App: `/r/:receiptId` for one receipt, `/m/:mandateId` for every decision of a mandate. No wallet needed.

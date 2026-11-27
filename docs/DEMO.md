@@ -1,6 +1,6 @@
 # Demo
 
-There are four ways to see Lex work: the proof run, the owner console, an agent over MCP, and the public pages.
+There are four ways to see Lex work: the proof run, the owner console, an agent over MCP, and the public pages. A demo video outline follows.
 
 ## 1. Proof run on a local chain
 
@@ -82,3 +82,17 @@ No wallet is needed.
 
 - `/r/:receiptId`: the decision and reason, every field, the transaction on the explorer, and the mandate it belongs to
 - `/m/:mandateId`: the rules in plain terms, a payment checker that calls `canSpend`, and every decision the mandate has made
+
+## 5. Demo video outline (about 3 minutes)
+
+Rehearse on a local chain or testnet. A mainnet recording requires an actual verified deployment and real funds; no mainnet proof is recorded yet.
+
+1. **Create and fund** a hard-law mandate: 1 per payment, 5 per day and ceiling 2. Show its public page. (35s)
+2. **Limits:** set a 0.5 `compute` envelope and a one-hour heartbeat. (20s)
+3. **Heartbeat:** pay 0.2 before check-in and show `REFUSE / AGENT_HEARTBEAT_STALE`; check in and pay again, then open its receipt. (40s)
+4. **Envelope:** pay 0.4 for `compute`, exceeding the remaining 0.3, and show `REFUSE / ENVELOPE_EXCEEDED`. (20s)
+5. **Sub-cap:** set the agent's sub-cap to 0.2, already spent; the next 0.1 is `REFUSE / OVER_AGENT_CAP`. Disable the sub-cap. (25s)
+6. **Signed intent:** sign and submit a 0.1 intent via the relayer. Check the on-chain `ALLOW` receipt and show the agent and relayer. A replay is rejected. (25s)
+7. **Public page:** show current limits, payment checker, and decision history. (20s)
+
+A relayer preflight does not guarantee an allowed result at mining. If the state changes, show the actual receipt rather than treating transaction submission as payment.

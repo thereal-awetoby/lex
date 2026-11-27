@@ -9,14 +9,14 @@
 
 ## Deployed contracts
 
-| Contract | Address | Deploy tx |
-|----------|---------|-----------|
-| MandateFactory | | |
-| Mandate | | |
+| Contract | Address | Deploy tx | Source verified |
+|----------|---------|-----------|-----------------|
+| MandateFactory | | | |
+| Mandate | | | |
 
 Deploy block:
 
-To deploy and verify on Blockscout, from `contracts`:
+To deploy and verify on Blockscout, from `contracts` (use the exact source and Foundry compiler settings used for deployment, including CBOR metadata settings):
 
 ```bash
 forge script script/Deploy.s.sol --rpc-url https://mainnet.hsk.xyz --broadcast \
@@ -37,9 +37,12 @@ forge verify-contract <MANDATE_ADDRESS> src/Mandate.sol:Mandate --rpc-url https:
 5. Owner pauses. Agent pays: **REFUSE**, `PAUSED`. Owner unpauses.
 6. Agent tries to lock 1.5 in escrow: **REFUSE**, `OVER_TX_CAP`, nothing locked. Agent locks 0.5 (**ALLOW** receipt), attests delivery, and the escrow is released to the counterparty.
 7. Agent pays a 0.25 HSP Cart Mandate through `payHspCart`: **ALLOW**. The run checks that the receipt carries the HSP order id. The cart is signed by the owner key acting as merchant, and no HSP merchant API call is made.
-8. Test an agent sub-cap, a data envelope, and heartbeat refusal and recovery. Sign a 0.2 spend intent, relay it, and check that replay is rejected.
-9. Creates a governed mandate where exceptions need 1 approval. Funds it with 2. Agent pays 1.5: **REFUSE**, `EXCEPTION_REQUIRED`. Agent requests an exception, the owner approves, and it pays out: **EXCEPTION**.
-10. Owner withdraws what is left in both mandates.
+8. Set the agent sub-cap to 1.5. A 0.5 payment is **REFUSE / OVER_AGENT_CAP** after 1.25 has already been spent; remove the cap.
+9. Set a 0.3 `data` envelope. A 0.4 data payment is **REFUSE / ENVELOPE_EXCEEDED**; remove the envelope.
+10. Require an hourly heartbeat: a payment before check-in is **REFUSE / AGENT_HEARTBEAT_STALE**. Check in, pay 0.1 (**ALLOW**), then disable the heartbeat.
+11. Sign and relay a 0.2 spend intent (**ALLOW**); a replay dry run returns `INTENT_USED`.
+12. Creates a governed mandate where exceptions need 1 approval. Funds it with 2. Agent pays 1.5: **REFUSE**, `EXCEPTION_REQUIRED`. Agent requests an exception, the owner approves, and it pays out: **EXCEPTION**.
+13. Owner withdraws what is left in both mandates.
 
 The owner key needs 5 USDC.e and HSK for gas. The agent key needs HSK for gas. The optional `RELAYER_PRIVATE_KEY` defaults to the owner and needs gas. By default the counterparty is the owner, so paid amounts come back and the run costs gas. A different counterparty receives the payments. If the run stops early, unspent mandate balances may need to be withdrawn separately.
 
