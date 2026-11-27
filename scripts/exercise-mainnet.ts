@@ -1,401 +1,303 @@
 /**
- * Exercise script — creates a mandate, funds it, runs a spend, and verifies the receipt.
- * Produces mainnet proof artifacts for the hackathon submission.
+ * Runs the Lex lifecycle against a deployed Mandate contract, checks every
+ * decision against the expected result, and prints a proof table for
+ * docs/MAINNET_PROOFS.md. Exits non-zero if any decision is not what it should be.
  *
- * Usage:
- *   npx tsx scripts/exercise-mainnet.ts
+ * Works on HSK mainnet (177), testnet (133) or a local node.
  *
  * Env:
- *   DEPLOYER_PRIVATE_KEY  - owner key (creates mandate, funds it)
- *   AGENT_PRIVATE_KEY     - agent key (executes spend)
- *   LEX_MANDATE_ADDRESS   - deployed Mandate contract
- *   HSK_RPC_URL           - RPC (default: https://mainnet.hsk.xyz)
- *   TOKEN_ADDRESS         - USDC.e or USDT address
- *
- * IMPORTANT: the contract's `Rules` struct order (see contracts/src/interfaces/IMandate.sol)
- * and the `canSpend` / `spend` argument order MUST be kept in sync here:
- *   createMandate(Rules rules, address token, address[] agents, address[] allowlist, address[] denylist, address[] approvers)
- *   canSpend(uint256 mandateId, uint256 amount, address counterparty, bytes32 category)
- *   spend(uint256 mandateId, uint256 amount, address counterparty, bytes32 category, bytes32 ref, bytes32 hspOrderId)
+ *   HSK_RPC_URL           RPC endpoint (default https://mainnet.hsk.xyz)
+ *   LEX_MANDATE_ADDRESS   deployed Mandate contract
+ *   DEPLOYER_PRIVATE_KEY  owner key: needs 5 of the token, plus gas
+ *   AGENT_PRIVATE_KEY     agent key: needs gas
+ *   TOKEN_ADDRESS         6-decimal token (default: USDC.e on 177, USDC on 133)
+ *   COUNTERPARTY          payee (default: the owner, so paid amounts come back)
+ *   APP_URL               optional; adds /r/:id receipt links to the table
  */
 
 import {
   createPublicClient,
   createWalletClient,
-  http,
-  parseUnits,
   formatUnits,
   getAddress,
+  http,
+  parseAbi,
+  parseEventLogs,
+  parseUnits,
+  type Chain,
+  type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { writeFileSync } from "node:fs";
+import {
+  CATEGORIES,
+  ExceptionMode,
+  HSK_MAINNET,
+  HSK_TESTNET,
+  HspMerchant,
+  Lex,
+  MANDATE_ABI,
+  REASON_CODES,
+  SettlementRail,
+  payHspCart,
+  type MandateRules,
+} from "../sdk/src/index.ts";
 
 const RPC = process.env.HSK_RPC_URL || "https://mainnet.hsk.xyz";
-const MANDATE_ADDR = getAddress(process.env.LEX_MANDATE_ADDRESS!);
-const OWNER_KEY = process.env.DEPLOYER_PRIVATE_KEY as `0x${string}`;
-const AGENT_KEY = process.env.AGENT_PRIVATE_KEY as `0x${string}`;
-const TOKEN = getAddress(process.env.TOKEN_ADDRESS || "0x054ed45810DbBAb8B27668922D110669c9D88D0a"); // USDC.e
+const MANDATE = process.env.LEX_MANDATE_ADDRESS as `0x${string}` | undefined;
+const OWNER_KEY = process.env.DEPLOYER_PRIVATE_KEY as Hex | undefined;
+const AGENT_KEY = process.env.AGENT_PRIVATE_KEY as Hex | undefined;
+const APP_URL = (process.env.APP_URL || "").replace(/\/$/, "");
 
-if (!OWNER_KEY || !AGENT_KEY || !MANDATE_ADDR) {
-  console.error("Set DEPLOYER_PRIVATE_KEY, AGENT_PRIVATE_KEY, LEX_MANDATE_ADDRESS");
-  process.exit(1);
-}
+const DENYLISTED = "0x000000000000000000000000000000000000dEaD" as const;
+const ZERO32 = `0x${"00".repeat(32)}` as Hex;
+const DECISIONS = ["ALLOW", "REFUSE", "EXCEPTION"];
 
-const chain = {
-  id: 177,
-  name: "HashKey Chain",
-  nativeCurrency: { name: "HSK", symbol: "HSK", decimals: 18 },
-  rpcUrls: { default: { http: [RPC] } },
-} as const;
+const ERC20 = parseAbi([
+  "function balanceOf(address) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+  "function symbol() view returns (string)",
+]);
 
-// These MUST match contracts/src/Mandate.sol (IMandate.Rules struct order).
-const MANDATE_ABI = [
-  {
-    type: "function",
-    name: "createMandate",
-    stateMutability: "nonpayable",
-    inputs: [
-      {
-        name: "rules",
-        type: "tuple",
-        components: [
-          { name: "perTxCap", type: "uint256" },
-          { name: "rollingWindowCap", type: "uint256" },
-          { name: "rollingWindowDuration", type: "uint256" },
-          { name: "perCounterpartyCap", type: "uint256" },
-          { name: "perCategoryCap", type: "uint256" },
-          { name: "cooldownSeconds", type: "uint256" },
-          { name: "activeWindowStart", type: "uint256" },
-          { name: "activeWindowEnd", type: "uint256" },
-          { name: "minCounterpartyTier", type: "uint256" },
-          { name: "absoluteCeiling", type: "uint256" },
-          { name: "exceptionMode", type: "uint8" },
-          { name: "preferredRail", type: "uint8" },
-          { name: "exceptionApprovalThreshold", type: "uint8" },
-          { name: "exceptionTimeDelay", type: "uint256" },
-          { name: "timelockForRuleChange", type: "uint256" },
-        ],
-      },
-      { name: "token", type: "address" },
-      { name: "initialAgents", type: "address[]" },
-      { name: "initialAllowlist", type: "address[]" },
-      { name: "initialDenylist", type: "address[]" },
-      { name: "initialApprovers", type: "address[]" },
-    ],
-    outputs: [{ name: "mandateId", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "fund",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "mandateId", type: "uint256" },
-      { name: "amount", type: "uint256" },
-    ],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "spend",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "mandateId", type: "uint256" },
-      { name: "amount", type: "uint256" },
-      { name: "counterparty", type: "address" },
-      { name: "category", type: "bytes32" },
-      { name: "ref", type: "bytes32" },
-      { name: "hspOrderId", type: "bytes32" },
-    ],
-    outputs: [{ name: "receiptId", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "getMandate",
-    stateMutability: "view",
-    inputs: [{ name: "mandateId", type: "uint256" }],
-    outputs: [
-      { name: "owner", type: "address" },
-      { name: "paused", type: "bool" },
-      { name: "token", type: "address" },
-      { name: "balance", type: "uint256" },
-      { name: "policyHash", type: "bytes32" },
-      {
-        name: "rules",
-        type: "tuple",
-        components: [
-          { name: "perTxCap", type: "uint256" },
-          { name: "rollingWindowCap", type: "uint256" },
-          { name: "rollingWindowDuration", type: "uint256" },
-          { name: "perCounterpartyCap", type: "uint256" },
-          { name: "perCategoryCap", type: "uint256" },
-          { name: "cooldownSeconds", type: "uint256" },
-          { name: "activeWindowStart", type: "uint256" },
-          { name: "activeWindowEnd", type: "uint256" },
-          { name: "minCounterpartyTier", type: "uint256" },
-          { name: "absoluteCeiling", type: "uint256" },
-          { name: "exceptionMode", type: "uint8" },
-          { name: "preferredRail", type: "uint8" },
-          { name: "exceptionApprovalThreshold", type: "uint8" },
-          { name: "exceptionTimeDelay", type: "uint256" },
-          { name: "timelockForRuleChange", type: "uint256" },
-        ],
-      },
-    ],
-  },
-  {
-    type: "function",
-    name: "getReceipt",
-    stateMutability: "view",
-    inputs: [{ name: "receiptId", type: "uint256" }],
-    outputs: [
-      {
-        name: "",
-        type: "tuple",
-        components: [
-          { name: "receiptId", type: "uint256" },
-          { name: "mandateId", type: "uint256" },
-          { name: "policyHash", type: "bytes32" },
-          { name: "decision", type: "uint8" },
-          { name: "reasonCode", type: "uint16" },
-          { name: "amount", type: "uint256" },
-          { name: "token", type: "address" },
-          { name: "counterparty", type: "address" },
-          { name: "category", type: "bytes32" },
-          { name: "ref", type: "bytes32" },
-          { name: "exceptionId", type: "uint256" },
-          { name: "hspOrderId", type: "bytes32" },
-          { name: "txRef", type: "bytes32" },
-          { name: "timestamp", type: "uint256" },
-        ],
-      },
-    ],
-  },
-  {
-    type: "function",
-    name: "canSpend",
-    stateMutability: "view",
-    inputs: [
-      { name: "mandateId", type: "uint256" },
-      { name: "amount", type: "uint256" },
-      { name: "counterparty", type: "address" },
-      { name: "category", type: "bytes32" },
-    ],
-    outputs: [
-      { name: "", type: "bool" },
-      { name: "", type: "uint16" },
-    ],
-  },
-  {
-    type: "event",
-    name: "MandateCreated",
-    inputs: [
-      { name: "mandateId", type: "uint256", indexed: true },
-      { name: "owner", type: "address", indexed: true },
-    ],
-  },
-  {
-    type: "event",
-    name: "SpendDecision",
-    inputs: [
-      { name: "mandateId", type: "uint256", indexed: true },
-      { name: "receiptId", type: "uint256", indexed: true },
-      { name: "decision", type: "uint8", indexed: false },
-      { name: "reasonCode", type: "uint16", indexed: false },
-      { name: "amount", type: "uint256", indexed: false },
-      { name: "counterparty", type: "address", indexed: false },
-      { name: "category", type: "bytes32", indexed: false },
-    ],
-  },
-] as const;
+const units = (v: string) => parseUnits(v, 6);
 
-const ERC20_ABI = [
-  {
-    type: "function",
-    name: "approve",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "spender", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    outputs: [{ name: "", type: "bool" }],
-  },
-  {
-    type: "function",
-    name: "balanceOf",
-    stateMutability: "view",
-    inputs: [{ name: "account", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const;
-
-const EXPLORER = "https://hashkeyscan.io";
-
-interface Proof {
+interface Row {
   step: string;
-  txHash?: string;
-  blockNumber?: bigint;
-  explorerUrl?: string;
-  details: Record<string, unknown>;
+  decision: string;
+  reason: string;
+  receiptId?: bigint;
+  txHash: Hex;
+  ok: boolean;
 }
 
 async function main() {
+  if (!MANDATE || !OWNER_KEY || !AGENT_KEY) {
+    throw new Error("Set LEX_MANDATE_ADDRESS, DEPLOYER_PRIVATE_KEY and AGENT_PRIVATE_KEY");
+  }
+
+  // Build the chain from the RPC so the same run works on mainnet, testnet or a local node
+  const chainId = await createPublicClient({ transport: http(RPC) }).getChainId();
+  const chain: Chain = {
+    id: chainId,
+    name: `HashKey Chain (${chainId})`,
+    nativeCurrency: { name: "HSK", symbol: "HSK", decimals: 18 },
+    rpcUrls: { default: { http: [RPC] } },
+  };
+  const explorer =
+    chainId === HSK_MAINNET.id ? HSK_MAINNET.explorerUrl : chainId === HSK_TESTNET.id ? HSK_TESTNET.explorerUrl : "";
+  const defaultToken =
+    chainId === HSK_MAINNET.id ? HSK_MAINNET.tokens.USDC_E : chainId === HSK_TESTNET.id ? HSK_TESTNET.tokens.USDC_E : "";
+  const tokenEnv = process.env.TOKEN_ADDRESS || defaultToken;
+  if (!tokenEnv) throw new Error(`Set TOKEN_ADDRESS for chain ${chainId}`);
+  const token = getAddress(tokenEnv);
+
   const owner = privateKeyToAccount(OWNER_KEY);
   const agent = privateKeyToAccount(AGENT_KEY);
+  const counterparty = getAddress(process.env.COUNTERPARTY || owner.address);
 
-  const publicClient = createPublicClient({ chain, transport: http(RPC) });
-  const ownerWallet = createWalletClient({ account: owner, chain, transport: http(RPC) });
-  const agentWallet = createWalletClient({ account: agent, chain, transport: http(RPC) });
+  const ownerLex = new Lex({ mandateAddress: MANDATE, rpcUrl: RPC, chain }).connect(
+    createWalletClient({ account: owner, chain, transport: http(RPC) })
+  );
+  const agentLex = new Lex({ mandateAddress: MANDATE, rpcUrl: RPC, chain }).connect(
+    createWalletClient({ account: agent, chain, transport: http(RPC) })
+  );
+  const client = ownerLex.publicClient;
 
-  const proofs: Proof[] = [];
-  const log = (step: string, data: Partial<Proof>) => {
-    const p: Proof = { step, details: {}, ...data };
-    if (p.txHash) p.explorerUrl = `${EXPLORER}/tx/${p.txHash}`;
-    proofs.push(p);
-    console.log(`\n=== ${step} ===`);
-    console.log(JSON.stringify(p, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2));
+  // ── Preflight ──────────────────────────────────────────────────────
+  const [decimals, symbol, tokenBalance] = await Promise.all([
+    client.readContract({ address: token, abi: ERC20, functionName: "decimals" }),
+    client.readContract({ address: token, abi: ERC20, functionName: "symbol" }),
+    client.readContract({ address: token, abi: ERC20, functionName: "balanceOf", args: [owner.address] }),
+  ]);
+  if (decimals !== 6) throw new Error(`${symbol} has ${decimals} decimals; this run expects 6`);
+  if (tokenBalance < units("5")) {
+    throw new Error(`Owner ${owner.address} holds ${formatUnits(tokenBalance, 6)} ${symbol}; needs 5`);
+  }
+  for (const [name, address] of [
+    ["owner", owner.address],
+    ["agent", agent.address],
+  ] as const) {
+    if ((await client.getBalance({ address })) === 0n) throw new Error(`${name} ${address} has no HSK for gas`);
+  }
+  console.log(`Chain ${chainId}, Mandate ${MANDATE}, token ${symbol} ${token}`);
+  console.log(`Owner ${owner.address}, agent ${agent.address}, counterparty ${counterparty}\n`);
+
+  const rows: Row[] = [];
+
+  /** Reads the receipt from the chain and compares it with the expected decision and reason */
+  const record = async (step: string, txHash: Hex, receiptId?: bigint, expect?: [string, string]) => {
+    let decision = "-";
+    let reason = "-";
+    if (receiptId !== undefined) {
+      const r = await ownerLex.getReceipt(receiptId);
+      decision = DECISIONS[Number(r.decision)] ?? "?";
+      reason = REASON_CODES[Number(r.reasonCode)] ?? String(r.reasonCode);
+    }
+    const ok = !expect || (decision === expect[0] && reason === expect[1]);
+    rows.push({ step, decision, reason, receiptId, txHash, ok });
+    const shown = receiptId === undefined ? "" : ` -> ${decision}${decision === "REFUSE" ? ` ${reason}` : ""}`;
+    const expected = ok || !expect ? "" : ` (expected ${expect[0]} ${expect[1]})`;
+    console.log(`${ok ? "ok  " : "FAIL"} ${step}${shown}${expected}`);
   };
 
-  // 1. Check token balance
-  const tokenBal = await publicClient.readContract({
-    address: TOKEN,
-    abi: ERC20_ABI,
-    functionName: "balanceOf",
-    args: [owner.address],
-  });
-  log("Token Balance", { details: { owner: owner.address, balance: formatUnits(tokenBal, 6), token: TOKEN } });
+  /** Receipt id from a transaction whose SDK call returns a different id (escrow lock) */
+  const receiptIdOf = async (hash: Hex) => {
+    const tx = await client.getTransactionReceipt({ hash });
+    const logs = parseEventLogs({
+      abi: MANDATE_ABI,
+      logs: tx.logs.filter((log) => log.address.toLowerCase() === MANDATE.toLowerCase()),
+      eventName: "SpendDecision",
+    });
+    return (logs[0]?.args as { receiptId?: bigint } | undefined)?.receiptId;
+  };
 
-  const fundAmount = parseUnits("10", 6); // 10 USDC.e
-  const spendAmount = parseUnits("2", 6); // 2 USDC.e
-
-  // 2. Create mandate — Rules struct order MUST match the contract.
-  const rules = {
-    perTxCap: parseUnits("5", 6),
-    rollingWindowCap: parseUnits("50", 6),
+  const rules: MandateRules = {
+    perTxCap: units("1"),
+    rollingWindowCap: units("5"),
     rollingWindowDuration: 86400n,
-    perCounterpartyCap: parseUnits("20", 6),
-    perCategoryCap: parseUnits("30", 6),
-    cooldownSeconds: 60n,
+    perCounterpartyCap: units("5"),
+    perCategoryCap: units("5"),
+    cooldownSeconds: 0n,
     activeWindowStart: 0n,
     activeWindowEnd: 0n,
     minCounterpartyTier: 0n,
-    absoluteCeiling: parseUnits("100", 6),
-    exceptionMode: 0, // HARD_LAW (uint8)
-    preferredRail: 0, // HSP (uint8)
+    absoluteCeiling: units("2"),
+    exceptionMode: ExceptionMode.HARD_LAW,
+    preferredRail: SettlementRail.DIRECT,
     exceptionApprovalThreshold: 0,
     exceptionTimeDelay: 0n,
     timelockForRuleChange: 0n,
   };
 
-  console.log("\nCreating mandate...");
-  const createHash = await ownerWallet.writeContract({
-    address: MANDATE_ADDR,
-    abi: MANDATE_ABI,
-    functionName: "createMandate",
-    args: [rules, TOKEN, [agent.address], [], [], []],
-  });
-  const createRx = await publicClient.waitForTransactionReceipt({ hash: createHash });
-  log("Create Mandate", {
-    txHash: createHash,
-    blockNumber: createRx.blockNumber,
-    details: { agent: agent.address, rules: { perTxCap: "5", rollingCap: "50", absoluteCeiling: "100" } },
-  });
+  const pay = (mandateId: bigint, amount: string, to: `0x${string}`) =>
+    agentLex.spend(mandateId, units(amount), to, CATEGORIES.COMPUTE, ZERO32, ZERO32);
 
-  // Parse mandate ID from logs (MandateCreated: topics[1] = mandateId)
-  let mandateId = 0n;
-  for (const l of createRx.logs) {
-    try {
-      if (l.topics[0] && l.topics[1]) {
-        mandateId = BigInt(l.topics[1]);
-        break;
-      }
-    } catch {}
+  // ── Hard-law mandate ───────────────────────────────────────────────
+  const a = await ownerLex.createMandate({
+    rules,
+    token,
+    agents: [agent.address],
+    allowlist: [counterparty],
+    denylist: [DENYLISTED],
+    approvers: [],
+  });
+  await record(`Create hard-law mandate #${a.mandateId}: 1 per payment, 5 per 24h, ceiling 2`, a.txHash);
+  await record(`Fund mandate #${a.mandateId} with 3 ${symbol}`, await ownerLex.fund(a.mandateId, units("3")));
+
+  let s = await pay(a.mandateId, "0.5", counterparty);
+  await record("Agent pays 0.5", s.txHash, s.receiptId, ["ALLOW", "OK"]);
+
+  s = await pay(a.mandateId, "1.5", counterparty);
+  await record("Agent pays 1.5, over the per-payment cap", s.txHash, s.receiptId, ["REFUSE", "OVER_TX_CAP"]);
+
+  s = await pay(a.mandateId, "0.1", DENYLISTED);
+  await record("Agent pays a denylisted address", s.txHash, s.receiptId, ["REFUSE", "DENYLISTED"]);
+
+  await record("Owner pauses the mandate", await ownerLex.pause(a.mandateId));
+  s = await pay(a.mandateId, "0.1", counterparty);
+  await record("Agent pays while paused", s.txHash, s.receiptId, ["REFUSE", "PAUSED"]);
+  await record("Owner unpauses", await ownerLex.unpause(a.mandateId));
+
+  // ── Escrow ─────────────────────────────────────────────────────────
+  const escrow = await agentLex.payWithEscrow(a.mandateId, counterparty, units("0.5"), ZERO32, ZERO32, 3600n);
+  await record(
+    `Agent locks 0.5 in escrow #${escrow.escrowId}`,
+    escrow.txHash,
+    await receiptIdOf(escrow.txHash),
+    ["ALLOW", "OK"]
+  );
+  await record("Agent attests delivery", await agentLex.attestEscrow(escrow.escrowId));
+  await record("Escrow released to the counterparty", await agentLex.releaseEscrow(escrow.escrowId));
+
+  // ── HSP cart ───────────────────────────────────────────────────────
+  // The owner key signs the cart as the merchant. No HSP merchant API call is made:
+  // this proves cart verification and payment through the mandate, and that the
+  // receipt carries the HSP order id. The network label is informational here.
+  const merchant = new HspMerchant({
+    baseUrl: "",
+    appKey: "",
+    appSecret: "",
+    merchantName: "Lex exercise",
+    merchantPrivateKey: OWNER_KEY,
+    network: chainId === HSK_TESTNET.id ? "hashkey-testnet" : "hashkey",
+    chainId,
+  });
+  const paymentRequestId = `lex-exercise-${Date.now()}`;
+  const cart = await merchant.buildCartMandate({
+    cartId: `cart-${paymentRequestId}`,
+    paymentRequestId,
+    payTo: counterparty,
+    token,
+    coin: symbol,
+    amount: "0.25",
+    label: "Lex exercise",
+  });
+  const hsp = await payHspCart(agentLex, a.mandateId, cart, {
+    category: CATEGORIES.DATA,
+    merchantSigner: owner.address,
+  });
+  if (!hsp.check.ok || hsp.receiptId === undefined || !hsp.txHash) {
+    throw new Error(`HSP cart not paid: ${hsp.check.errors.join(", ")}`);
   }
-  console.log(`Mandate ID: ${mandateId}`);
-
-  // 3. Approve + fund
-  console.log("\nApproving token...");
-  const approveHash = await ownerWallet.writeContract({
-    address: TOKEN,
-    abi: ERC20_ABI,
-    functionName: "approve",
-    args: [MANDATE_ADDR, fundAmount],
-  });
-  await publicClient.waitForTransactionReceipt({ hash: approveHash });
-
-  console.log("Funding mandate...");
-  const fundHash = await ownerWallet.writeContract({
-    address: MANDATE_ADDR,
-    abi: MANDATE_ABI,
-    functionName: "fund",
-    args: [mandateId, fundAmount],
-  });
-  const fundRx = await publicClient.waitForTransactionReceipt({ hash: fundHash });
-  log("Fund Mandate", {
-    txHash: fundHash,
-    blockNumber: fundRx.blockNumber,
-    details: { mandateId: mandateId.toString(), amount: "10 USDC.e" },
-  });
-
-  // 4. canSpend pre-flight — arg order: (mandateId, amount, counterparty, category)
-  const counterparty = "0x000000000000000000000000000000000000dEaD";
-  const category = ("0x" + "00".repeat(32)) as `0x${string}`;
-  const [allowed, reason] = await publicClient.readContract({
-    address: MANDATE_ADDR,
-    abi: MANDATE_ABI,
-    functionName: "canSpend",
-    args: [mandateId, spendAmount, counterparty, category],
-  });
-  log("canSpend Pre-flight", {
-    details: { allowed, reasonCode: reason, amount: "2 USDC.e", counterparty },
-  });
-
-  // 5. Agent spends — arg order: (mandateId, amount, counterparty, category, ref, hspOrderId)
-  console.log("\nAgent executing spend...");
-  const ref = ("0x" + "00".repeat(32)) as `0x${string}`;
-  const hspOrderId = ("0x" + "00".repeat(32)) as `0x${string}`;
-  const spendHash = await agentWallet.writeContract({
-    address: MANDATE_ADDR,
-    abi: MANDATE_ABI,
-    functionName: "spend",
-    args: [mandateId, spendAmount, counterparty, category, ref, hspOrderId],
-  });
-  const spendRx = await publicClient.waitForTransactionReceipt({ hash: spendHash });
-
-  let receiptId = 0n;
-  for (const l of spendRx.logs) {
-    try {
-      if (l.topics[0] && l.topics[2]) {
-        receiptId = BigInt(l.topics[2]);
-      }
-    } catch {}
+  await record(`Agent pays HSP cart ${paymentRequestId} (0.25)`, hsp.txHash, hsp.receiptId, ["ALLOW", "OK"]);
+  const hspReceipt = await ownerLex.getReceipt(hsp.receiptId);
+  if (hspReceipt.hspOrderId.toLowerCase() !== hsp.check.hspOrderId.toLowerCase()) {
+    throw new Error("HSP receipt does not carry the order id");
   }
-  log("Agent Spend", {
-    txHash: spendHash,
-    blockNumber: spendRx.blockNumber,
-    details: { mandateId: mandateId.toString(), receiptId: receiptId.toString(), amount: "2 USDC.e" },
-  });
 
-  // 6. Verify receipt
-  console.log("\nReading receipt on-chain...");
-  const receipt = await publicClient.readContract({
-    address: MANDATE_ADDR,
-    abi: MANDATE_ABI,
-    functionName: "getReceipt",
-    args: [receiptId],
+  // ── Governed mandate: exception ────────────────────────────────────
+  const b = await ownerLex.createMandate({
+    rules: { ...rules, exceptionMode: ExceptionMode.GOVERNED, exceptionApprovalThreshold: 1 },
+    token,
+    agents: [agent.address],
+    allowlist: [counterparty],
+    denylist: [],
+    approvers: [],
   });
-  log("Verify Receipt", {
-    details: { receiptId: receiptId.toString(), receipt: JSON.parse(JSON.stringify(receipt, (_, v) => (typeof v === "bigint" ? v.toString() : v))) },
-  });
+  await record(`Create governed mandate #${b.mandateId}: exceptions need 1 approval`, b.txHash);
+  await record(`Fund mandate #${b.mandateId} with 2 ${symbol}`, await ownerLex.fund(b.mandateId, units("2")));
 
-  // Write proof file
-  const proofJson = JSON.stringify(proofs, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2);
-  writeFileSync("docs/mainnet-proofs.json", proofJson);
-  console.log("\n\nProofs written to docs/mainnet-proofs.json");
-  console.log("Explorer links:");
-  proofs.filter((p) => p.explorerUrl).forEach((p) => console.log(`  ${p.step}: ${p.explorerUrl}`));
+  s = await pay(b.mandateId, "1.5", counterparty);
+  await record("Agent pays 1.5, over the per-payment cap", s.txHash, s.receiptId, ["REFUSE", "EXCEPTION_REQUIRED"]);
+  const exception = await agentLex.requestException(
+    b.mandateId,
+    units("1.5"),
+    counterparty,
+    CATEGORIES.COMPUTE,
+    "one-off job above the per-payment cap"
+  );
+  await record(`Agent requests exception #${exception.exceptionId}`, exception.txHash);
+  const approval = await ownerLex.approveException(exception.exceptionId);
+  await record("Owner approves; the exception pays out", approval.txHash, approval.receiptId, ["EXCEPTION", "OK"]);
+
+  // ── Return unspent funds ───────────────────────────────────────────
+  for (const id of [a.mandateId, b.mandateId]) {
+    const { balance } = await ownerLex.getMandate(id);
+    if (balance > 0n) {
+      await record(`Owner withdraws ${formatUnits(balance, 6)} from #${id}`, await ownerLex.withdraw(id, balance));
+    }
+  }
+
+  // ── Proof table ────────────────────────────────────────────────────
+  const txCell = (h: Hex) => (explorer ? `[${h.slice(0, 10)}…](${explorer}/tx/${h})` : `\`${h}\``);
+  const receiptCell = (id?: bigint) =>
+    id === undefined ? "" : APP_URL ? `[#${id}](${APP_URL}/r/${id})` : `#${id}`;
+
+  console.log(`\n### Run on chain ${chainId}, ${new Date().toISOString().slice(0, 10)}\n`);
+  console.log(`Mandate contract: \`${MANDATE}\`\n`);
+  console.log("| Step | Decision | Reason | Receipt | Tx |");
+  console.log("|------|----------|--------|---------|----|");
+  for (const r of rows) {
+    console.log(`| ${r.step} | ${r.decision} | ${r.reason} | ${receiptCell(r.receiptId)} | ${txCell(r.txHash)} |`);
+  }
+
+  const failed = rows.filter((r) => !r.ok);
+  if (failed.length > 0) {
+    console.error(`\n${failed.length} step(s) did not match the expected decision`);
+    process.exit(1);
+  }
 }
 
 main().catch((e) => {
-  console.error(e);
+  console.error(e instanceof Error ? e.message : e);
   process.exit(1);
 });
