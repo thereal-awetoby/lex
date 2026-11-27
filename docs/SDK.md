@@ -93,6 +93,10 @@ For the two log queries, pass the contract's deploy block as `fromBlock` rather 
 
 An agent checks in via `heartbeat(mandateId)`.
 
+The standalone `relaySpendIntent(url, intent, signature)` sends decimal-string integers to a relayer. Its result distinguishes `relayed` (a transaction was submitted) from `paid` (the relayer observed an ALLOW receipt). A dry-run refusal has no transaction; a mined refusal can still occur if state changes after the dry run. Verify the transaction and receipt independently before acting on an untrusted relayer's response. MCP performs that verification when the relayer reports a payment.
+
+`startHeartbeat(mandateId, intervalMs, onError?)` sends one heartbeat immediately and schedules subsequent check-ins without overlap. It returns a stop function. Heartbeats are on-chain transactions and require gas; an intent relayer does not relay heartbeats.
+
 ## Approver
 
 | Method | Notes |

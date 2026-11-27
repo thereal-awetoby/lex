@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useAccount } from "wagmi";
 import { useMandateWrite } from "@/hooks/useMandate";
-import { EXPLORER_URL, TOKENS } from "@/config/contracts";
+import { CHAIN_ID, EXPLORER_URL, TOKENS } from "@/config/contracts";
 import { encodeCategory } from "@lex/sdk";
 
 export function CreateMandate() {
@@ -69,7 +69,7 @@ export function CreateMandate() {
       ? form.denylist.split(",").map((a) => a.trim() as `0x${string}`)
       : [];
 
-    writeContract({
+    writeContract({ chainId: CHAIN_ID,
       address: mandateAddress,
       abi: mandateAbi,
       functionName: "createMandate",

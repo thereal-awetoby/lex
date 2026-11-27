@@ -2,12 +2,13 @@
 
 import { useReadContract, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { MANDATE_ABI } from "@lex/sdk";
-import { CONTRACTS } from "@/config/contracts";
+import { CHAIN_ID, CONTRACTS } from "@/config/contracts";
 
 export function useMandateRead(mandateId: bigint | undefined) {
   return useReadContract({
     address: CONTRACTS.mandate,
     abi: MANDATE_ABI,
+    chainId: CHAIN_ID,
     functionName: "getMandate",
     args: mandateId !== undefined ? [mandateId] : undefined,
     query: { enabled: mandateId !== undefined },
@@ -23,6 +24,7 @@ export function useCanSpend(
   return useReadContract({
     address: CONTRACTS.mandate,
     abi: MANDATE_ABI,
+    chainId: CHAIN_ID,
     functionName: "canSpend",
     args:
       mandateId !== undefined && amount !== undefined && counterparty && category
@@ -38,6 +40,7 @@ export function useReceipt(receiptId: bigint | undefined) {
   return useReadContract({
     address: CONTRACTS.mandate,
     abi: MANDATE_ABI,
+    chainId: CHAIN_ID,
     functionName: "getReceipt",
     args: receiptId !== undefined ? [receiptId] : undefined,
     query: { enabled: receiptId !== undefined },
@@ -48,6 +51,7 @@ export function useException(exceptionId: bigint | undefined) {
   return useReadContract({
     address: CONTRACTS.mandate,
     abi: MANDATE_ABI,
+    chainId: CHAIN_ID,
     functionName: "getException",
     args: exceptionId !== undefined ? [exceptionId] : undefined,
     query: { enabled: exceptionId !== undefined },
@@ -56,7 +60,7 @@ export function useException(exceptionId: bigint | undefined) {
 
 export function useMandateWrite() {
   const { writeContract, data: hash, isPending, error } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash, chainId: CHAIN_ID });
 
   return {
     writeContract,

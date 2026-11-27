@@ -4,14 +4,18 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Lex, encodeCategory, REASON_CODES, payHspCart, type HspCartMandate } from "@lex/sdk";
-import { createWalletClient, http } from "viem";
+import { Lex, encodeCategory, REASON_CODES, MANDATE_ABI, HSK_MAINNET, HSK_TESTNET, payHspCart, relaySpendIntent, type HspCartMandate } from "@lex/sdk";
+import { createWalletClient, http, parseEventLogs } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const MANDATE_ADDRESS = process.env.LEX_MANDATE_ADDRESS as `0x${string}`;
-const RPC_URL = process.env.HSK_RPC_URL || "https://mainnet.hsk.xyz";
+const chainId = Number(process.env.HSK_CHAIN_ID || HSK_MAINNET.id);
+if (chainId !== HSK_MAINNET.id && chainId !== HSK_TESTNET.id) throw new Error("HSK_CHAIN_ID must be 177 or 133");
+const network = chainId === HSK_TESTNET.id ? HSK_TESTNET : HSK_MAINNET;
+const RPC_URL = process.env.HSK_RPC_URL || network.rpcUrl;
 const AGENT_KEY = process.env.LEX_AGENT_PRIVATE_KEY as `0x${string}` | undefined;
 const AGENT_ADDRESS = AGENT_KEY ? privateKeyToAccount(AGENT_KEY).address : undefined;
+const RELAYER_URL = process.env.LEX_RELAYER_URL;
 
 // Trusted HSP merchant signers. A cart is only paid if its signature recovers to one of these.
 // The agent can pick which one applies, but cannot add new ones: the cart (and anything it
@@ -23,7 +27,10 @@ const TRUSTED_HSP_SIGNERS = (process.env.LEX_HSP_MERCHANT_SIGNERS || process.env
 
 const ZERO32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-const lex = new Lex({ mandateAddress: MANDATE_ADDRESS, rpcUrl: RPC_URL });
+const lex = new Lex({ mandateAddress: MANDATE_ADDRESS, rpcUrl: RPC_URL, chain: {
+  id: chainId, name: network.name, nativeCurrency: {name: "HSK", symbol: "HSK", decimals: 18},
+  rpcUrls: {default: {http: [RPC_URL]}},
+} });
 
 if (AGENT_KEY) {
   const account = privateKeyToAccount(AGENT_KEY);
@@ -60,6 +67,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: "object" as const, properties: {
         mandateId: {type: "string"}, amount: {type: "string"}, counterparty: {type: "string"},
         category: {type: "string"}, agent: {type: "string", description: "Defaults to the server agent"},
+      }, required: ["mandateId", "amount", "counterparty", "category"] },
+    },
+    {
+      name: "pay_via_relayer",
+      description: "Sign and submit a spend intent through the configured relayer. Check the returned paid/decision fields: a submitted transaction may still be refused on chain.",
+      inputSchema: { type: "object" as const, properties: {
+        mandateId: {type: "string"}, amount: {type: "string", description: "Token smallest units"},
+        counterparty: {type: "string"}, category: {type: "string"}, ref: {type: "string", description: "Optional bytes32 reference"},
       }, required: ["mandateId", "amount", "counterparty", "category"] },
     },
     {
@@ -241,6 +256,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result = await lex.canAgentSpend(BigInt(args!.mandateId as string), agent, BigInt(args!.amount as string), args!.counterparty as `0x${string}`, encodeCategory(args!.category as string));
         return {content: [{type: "text", text: JSON.stringify({agent, ...result}, null, 2)}]};
       }
+      case "pay_via_relayer": {
+        if (!RELAYER_URL) return {content: [{type: "text", text: "LEX_RELAYER_URL is not set"}], isError: true};
+        const intent = await lex.buildSpendIntent({mandateId: BigInt(args!.mandateId as string), amount: BigInt(args!.amount as string), counterparty: args!.counterparty as `0x${string}`, category: encodeCategory(args!.category as string), ref: ((args!.ref as string) || ZERO32) as `0x${string}`});
+        const result = await relaySpendIntent(RELAYER_URL, intent, await lex.signSpendIntent(intent));
+        // A relayer response is not proof of payment. Verify the transaction, exact intent digest,
+        // and stored receipt on the configured chain before telling the agent it paid.
+        if (result.paid) {
+          if (!result.txHash || result.receiptId === undefined || !AGENT_ADDRESS) throw new Error("Relayer omitted proof of payment");
+          const [tx, digest, receipt] = await Promise.all([
+            lex.publicClient.getTransactionReceipt({hash: result.txHash}),
+            lex.publicClient.readContract({address: MANDATE_ADDRESS, abi: MANDATE_ABI, functionName: "hashSpendIntent", args: [intent]}),
+            lex.getReceipt(result.receiptId),
+          ]);
+          const logs = tx.logs.filter(l => l.address.toLowerCase() === MANDATE_ADDRESS.toLowerCase());
+          const events = parseEventLogs({abi: MANDATE_ABI, logs, eventName: "SpendIntentExecuted"});
+          const matched = events.some(e => e.args.receiptId === result.receiptId && e.args.digest === digest && e.args.agent?.toLowerCase() === AGENT_ADDRESS.toLowerCase());
+          if (tx.status !== "success" || !matched || Number(receipt.decision) !== 0 || receipt.mandateId !== intent.mandateId || receipt.agent.toLowerCase() !== AGENT_ADDRESS.toLowerCase()) {
+            throw new Error("Relayer response does not match an allowed on-chain intent receipt");
+          }
+        }
+        return {content: [{type: "text", text: JSON.stringify(result, replacer, 2)}], isError: !result.paid};
+      }
+
       case "heartbeat": {
         const txHash = await lex.heartbeat(BigInt(args!.mandateId as string));
         return {content: [{type: "text", text: JSON.stringify({txHash}, null, 2)}]};

@@ -7,6 +7,7 @@ import { REASON_CODES, encodeCategory } from "@lex/sdk";
 import { useCanSpend, useMandateRead } from "@/hooks/useMandate";
 import { useMandateLogs } from "@/hooks/useMandateLogs";
 import { ActivityFeed } from "@/components/ActivityFeed";
+import { LimitsSummary } from "@/components/LimitsSummary";
 import { EXPLORER_URL } from "@/config/contracts";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -73,6 +74,8 @@ export default function MandatePublicPage() {
           <Row label="Policy hash" value={policyHash} mono />
         </div>
       </section>
+
+      <section><h2 className="font-medium mb-2">Agents and limits</h2><LimitsSummary mandateId={mandateId} /></section>
 
       <PaymentCheck mandateId={mandateId} />
 

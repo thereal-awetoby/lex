@@ -8,12 +8,13 @@ Payments settle through ERC-20 transfers. The SDK also checks HSP (HashKey Settl
 
 ## How enforcement works
 
-Funds sit in the Mandate contract, not in the agent's wallet. There are four ways for them to leave:
+Funds sit in the Mandate contract, not in the agent's wallet. Funds can leave through these paths:
 
 | Path | Who calls | Checked against |
 |------|-----------|-----------------|
 | `spend` | bound agent | spend rules |
-| approved exception | owner, approvers, or a bound agent when executing a delayed exception | paused status, denylist, absolute ceiling, balance |
+| `executeSpendIntent` | relayer or other submitter | signed agent intent and spend rules |
+| approved exception | owner, approvers, or a bound agent when executing a delayed exception | paused status, denylist, absolute ceiling, envelope, agent binding, sub-cap, heartbeat, balance |
 | escrow release | owner, counterparty or bound agent, after payer-side attestation | spend rules are checked when the escrow is locked |
 | `withdraw` | owner | unspent mandate balance; sent to owner |
 
@@ -42,18 +43,20 @@ A category is chosen by the agent, so an envelope cannot prevent a compromised a
 ## Exceptions
 
 - **Hard law:** no exceptions.
-- **Governed:** an agent can request an exception. It executes after the configured approval threshold, or after one approval plus a configured time delay, or on the owner's approval if neither is set. Paused status, denylist, absolute ceiling and balance are checked again at execution time.
+- **Governed:** an agent can request an exception. It executes after the configured approval threshold, or after one approval plus a configured time delay, or on the owner's approval if neither is set. Paused status, denylist, absolute ceiling, envelope, agent binding, sub-cap, heartbeat and balance are checked again at execution time.
+
+The app can relay signed intents at `POST /api/relay`. Set a dedicated `RELAYER_PRIVATE_KEY` and optionally `RELAY_MANDATE_IDS`, and configure `LEX_RELAYER_URL` for the MCP server. Set `HSK_CHAIN_ID=133` and the matching `HSK_RPC_URL` for MCP testnet use. The relayer dry-runs each intent, but policy may change before mining; always check the returned on-chain `decision` and `paid` fields, not just `relayed`. MCP independently verifies a claimed payment against the configured chain. The endpoint is unauthenticated and has no built-in rate limit: restrict it at the infrastructure layer and keep only limited gas on the relayer key. A gasless agent still needs another means of sending heartbeats if its mandate requires them.
 
 ## Receipts
 
-An authorized `spend` that reaches the policy check writes a receipt for an allowed or refused decision. A paused mandate records `REFUSE / PAUSED`. Executed exceptions and escrow locks also write receipts. Calls can still revert, for example on authorization or token transfer failure; a refused escrow lock reverts rather than writing a refusal receipt.
+An authorized `spend` that reaches the policy check writes a receipt for an allowed or refused decision. A paused mandate records `REFUSE / PAUSED`. Executed exceptions and escrow locks also write receipts. Calls can still revert, for example on authorization or token transfer failure; a refused escrow lock writes a refusal receipt and locks nothing.
 
 Receipt, exception and escrow IDs are unique across mandates within one Mandate contract. A receipt includes a hash of the `Rules` struct, not the separately managed allowlist, denylist or counterparty tiers.
 
 Public pages, no wallet needed:
 
-- `/r/:receiptId`: receipt details and the transaction on HashKey Scan, when its event is found
-- `/m/:mandateId`: rules, a `canSpend` payment checker, and decision activity
+- `/r/:receiptId`: receipt details, transaction and relayer when found
+- `/m/:mandateId`: rules, agent limits, envelopes, guardian, a `canSpend` payment checker, and decision activity
 
 ## Escrow
 
@@ -76,12 +79,12 @@ See [docs/HSP.md](docs/HSP.md).
 contracts/   Solidity 0.8.24, Foundry. Mandate.sol, MandateFactory.sol, tests
 sdk/         TypeScript SDK (viem): Lex client and HSP helpers
 mcp/         MCP server for agents to check payments, spend, request exceptions and use escrow
-app/         Next.js owner console and public receipt and mandate pages
+app/         Next.js owner console, public pages and intent relayer
 scripts/     deploy and exercise scripts
 docs/        threat model, HSP, SDK, receipts, demo, mainnet proofs
 ```
 
-MCP tools: `get_mandate`, `can_pay`, `can_agent_spend`, `heartbeat`, `pay`, `pay_hsp_cart`, `request_exception`, `execute_exception`, `pay_escrow`, `attest_escrow`, `release_escrow`, `get_receipt`, `list_receipts`, `get_exception`, `get_escrow`.
+MCP tools: `get_mandate`, `can_pay`, `can_agent_spend`, `heartbeat`, `pay`, `pay_via_relayer`, `pay_hsp_cart`, `request_exception`, `execute_exception`, `pay_escrow`, `attest_escrow`, `release_escrow`, `get_receipt`, `list_receipts`, `get_exception`, `get_escrow`.
 
 ## Network
 
@@ -130,3 +133,5 @@ Environment variables are listed in `.env.example`. CI builds and tests the cont
 ## License
 
 MIT
+
+The app defaults to chain 177. Set `NEXT_PUBLIC_CHAIN_ID=133` for testnet and configure the corresponding deployment address and deployment block. Empty RPC/explorer overrides use the selected network's defaults. CI also runs the proof exercise on local Anvil.

@@ -15,5 +15,8 @@
     "build:app": "cd app && npm run build",
     "deploy": "npx tsx scripts/deploy.ts",
     "exercise": "npx tsx scripts/exercise-mainnet.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.0"
   }
 }
