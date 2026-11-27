@@ -417,6 +417,38 @@ export class Lex {
     return hash;
   }
 
+  private async write(functionName: string, args: readonly unknown[]): Promise<`0x${string}`> {
+    const wallet = this.requireWallet();
+    const hash = await wallet.writeContract({
+      address: this.mandateAddress,
+      abi: MANDATE_ABI,
+      functionName: functionName as any,
+      args: args as any,
+      chain: this.publicClient.chain,
+      account: wallet.account!,
+    });
+    await this.waitOk(hash);
+    return hash;
+  }
+
+  /** Applies a queued rule change once its timelock has passed (owner) */
+  executeRuleChange(mandateId: bigint): Promise<`0x${string}`> {
+    return this.write("executeRuleChange", [mandateId]);
+  }
+
+  /** Drops a queued rule change (owner) */
+  cancelRuleChange(mandateId: bigint): Promise<`0x${string}`> {
+    return this.write("cancelRuleChange", [mandateId]);
+  }
+
+  addApprover(mandateId: bigint, approver: `0x${string}`): Promise<`0x${string}`> {
+    return this.write("addApprover", [mandateId, approver]);
+  }
+
+  removeApprover(mandateId: bigint, approver: `0x${string}`): Promise<`0x${string}`> {
+    return this.write("removeApprover", [mandateId, approver]);
+  }
+
   async pause(mandateId: bigint): Promise<`0x${string}`> {
     const wallet = this.requireWallet();
     const hash = await wallet.writeContract({
@@ -538,7 +570,7 @@ export class Lex {
     attestationSchemaId: `0x${string}`,
     ref: `0x${string}`,
     timeout: bigint
-  ): Promise<{ escrowId: bigint; txHash: `0x${string}` }> {
+  ): Promise<{ escrowId?: bigint; receiptId: bigint; txHash: `0x${string}` }> {
     const wallet = this.requireWallet();
     const hash = await wallet.writeContract({
       address: this.mandateAddress,
@@ -549,13 +581,13 @@ export class Lex {
       account: wallet.account!,
     });
     const txReceipt = await this.waitOk(hash);
-    const logs = parseEventLogs({
-      abi: MANDATE_ABI,
-      logs: txReceipt.logs as any,
-      eventName: "EscrowLocked",
-    });
-    const escrowId = (logs[0]?.args as any)?.escrowId as bigint;
-    return { escrowId, txHash: hash };
+    const logs = txReceipt.logs.filter((log) => log.address.toLowerCase() === this.mandateAddress.toLowerCase());
+    const locked = parseEventLogs({ abi: MANDATE_ABI, logs, eventName: "EscrowLocked" });
+    const decisions = parseEventLogs({ abi: MANDATE_ABI, logs, eventName: "SpendDecision" });
+    const escrowId = (locked[0]?.args as any)?.escrowId as bigint | undefined;
+    const receiptId = (decisions[0]?.args as any)?.receiptId as bigint | undefined;
+    if (receiptId === undefined) throw new Error("Missing SpendDecision event for escrow transaction");
+    return { escrowId, receiptId, txHash: hash };
   }
 
   private async simpleWrite(functionName: "attestEscrow" | "releaseEscrow" | "refundEscrow", id: bigint) {

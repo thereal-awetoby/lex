@@ -27,6 +27,9 @@ export function CreateMandate() {
     agent: "",
     allowlist: "",
     denylist: "",
+    approvers: "",
+    approvalsRequired: "1",
+    exceptionTimeDelay: "0",
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -49,8 +52,8 @@ export function CreateMandate() {
       absoluteCeiling: toUnits(form.absoluteCeiling),
       exceptionMode: Number(form.exceptionMode),
       preferredRail: 0, // HSP
-      exceptionApprovalThreshold: form.exceptionMode === "1" ? 1 : 0,
-      exceptionTimeDelay: 0n,
+      exceptionApprovalThreshold: form.exceptionMode === "1" ? Number(form.approvalsRequired || "0") : 0,
+      exceptionTimeDelay: form.exceptionMode === "1" ? BigInt(form.exceptionTimeDelay || "0") : 0n,
       timelockForRuleChange: BigInt(form.timelockForRuleChange),
     };
 
@@ -58,6 +61,10 @@ export function CreateMandate() {
     const allowlistAddrs = form.allowlist
       ? form.allowlist.split(",").map((a) => a.trim() as `0x${string}`)
       : [];
+    const approverAddrs =
+      form.exceptionMode === "1" && form.approvers
+        ? form.approvers.split(",").map((a) => a.trim() as `0x${string}`).filter(Boolean)
+        : [];
     const denylistAddrs = form.denylist
       ? form.denylist.split(",").map((a) => a.trim() as `0x${string}`)
       : [];
@@ -66,7 +73,7 @@ export function CreateMandate() {
       address: mandateAddress,
       abi: mandateAbi,
       functionName: "createMandate",
-      args: [rules, form.token as `0x${string}`, agents, allowlistAddrs, denylistAddrs, []],
+      args: [rules, form.token as `0x${string}`, agents, allowlistAddrs, denylistAddrs, approverAddrs],
     });
   };
 
@@ -159,6 +166,29 @@ export function CreateMandate() {
           />
         </label>
       </div>
+
+      {form.exceptionMode === "1" && (
+        <div className="space-y-3 border rounded p-3">
+          <label className="block">
+            <span className="text-sm text-gray-500">Approvers (comma-separated, the owner can always approve)</span>
+            <input type="text" value={form.approvers} onChange={(e) => setForm({ ...form, approvers: e.target.value })}
+              placeholder="0x..., 0x..." className="w-full mt-1 px-3 py-2 border rounded font-mono text-sm" />
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-sm text-gray-500">Approvals required</span>
+              <input type="number" min="0" value={form.approvalsRequired} onChange={(e) => setForm({ ...form, approvalsRequired: e.target.value })}
+                className="w-full mt-1 px-3 py-2 border rounded" />
+            </label>
+            <label className="block">
+              <span className="text-sm text-gray-500">Or: time delay after 1 approval (sec)</span>
+              <input type="number" min="0" value={form.exceptionTimeDelay} onChange={(e) => setForm({ ...form, exceptionTimeDelay: e.target.value })}
+                className="w-full mt-1 px-3 py-2 border rounded" />
+            </label>
+          </div>
+          <p className="text-xs text-gray-500">With 0 approvals and no delay, the owner's approval alone executes an exception.</p>
+        </div>
+      )}
 
       <label className="block">
         <span className="text-sm text-gray-500">Token</span>

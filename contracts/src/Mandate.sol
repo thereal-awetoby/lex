@@ -252,6 +252,10 @@ contract Mandate is IMandate {
         if (denylist[mandateId][counterparty])
             return (false, 5); // DENYLISTED
 
+        // A payment above the ceiling cannot be made via an exception.
+        if (m.rules.absoluteCeiling > 0 && amount > m.rules.absoluteCeiling)
+            return (false, 12); // OVER_ABSOLUTE_CEILING
+
         if (m.rules.perTxCap > 0 && amount > m.rules.perTxCap)
             return (false, 2); // OVER_TX_CAP
 
@@ -314,10 +318,6 @@ contract Mandate is IMandate {
                     return (false, 8); // WINDOW_CLOSED
             }
         }
-
-        // Absolute ceiling
-        if (m.rules.absoluteCeiling > 0 && amount > m.rules.absoluteCeiling)
-            return (false, 12); // OVER_ABSOLUTE_CEILING
 
         // Balance
         if (amount > m.balance)
@@ -622,11 +622,15 @@ contract Mandate is IMandate {
         bytes32 attestationSchemaId,
         bytes32 ref,
         uint256 timeout
-    ) external onlyAgent(mandateId) notPaused(mandateId) returns (uint256 escrowId) {
+    ) external onlyAgent(mandateId) returns (uint256 escrowId) {
         require(timeout > 0, "TIMEOUT_REQUIRED");
         bytes32 category = bytes32("escrow");
+        // Refusals, including pause, write a receipt and lock nothing.
         (bool ok, uint16 reasonCode) = _checkSpend(mandateId, amount, counterparty, category);
-        require(ok, string(abi.encodePacked("SPEND_CHECK_FAILED:", _toString(reasonCode))));
+        if (!ok) {
+            _emitRefuseReceipt(mandateId, nextReceiptId++, reasonCode, amount, counterparty, category, ref);
+            return 0;
+        }
 
         MandateData storage m = mandates[mandateId];
         escrowId = nextEscrowId++;
@@ -694,18 +698,6 @@ contract Mandate is IMandate {
         e.state = EscrowState.REFUNDED;
         mandates[e.mandateId].balance += e.amount;
         emit EscrowRefunded(escrowId);
-    }
-
-    function _toString(uint256 v) internal pure returns (string memory) {
-        if (v == 0) return "0";
-        uint256 len;
-        for (uint256 t = v; t != 0; t /= 10) len++;
-        bytes memory buf = new bytes(len);
-        while (v != 0) {
-            buf[--len] = bytes1(uint8(48 + (v % 10)));
-            v /= 10;
-        }
-        return string(buf);
     }
 
     // ── Owner withdraw ─────────────────────────────────────────────────

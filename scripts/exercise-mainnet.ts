@@ -22,7 +22,6 @@ import {
   getAddress,
   http,
   parseAbi,
-  parseEventLogs,
   parseUnits,
   type Chain,
   type Hex,
@@ -35,7 +34,6 @@ import {
   HSK_TESTNET,
   HspMerchant,
   Lex,
-  MANDATE_ABI,
   REASON_CODES,
   SettlementRail,
   payHspCart,
@@ -139,17 +137,6 @@ async function main() {
     console.log(`${ok ? "ok  " : "FAIL"} ${step}${shown}${expected}`);
   };
 
-  /** Receipt id from a transaction whose SDK call returns a different id (escrow lock) */
-  const receiptIdOf = async (hash: Hex) => {
-    const tx = await client.getTransactionReceipt({ hash });
-    const logs = parseEventLogs({
-      abi: MANDATE_ABI,
-      logs: tx.logs.filter((log) => log.address.toLowerCase() === MANDATE.toLowerCase()),
-      eventName: "SpendDecision",
-    });
-    return (logs[0]?.args as { receiptId?: bigint } | undefined)?.receiptId;
-  };
-
   const rules: MandateRules = {
     perTxCap: units("1"),
     rollingWindowCap: units("5"),
@@ -198,13 +185,13 @@ async function main() {
   await record("Owner unpauses", await ownerLex.unpause(a.mandateId));
 
   // ── Escrow ─────────────────────────────────────────────────────────
+  const refusedEscrow = await agentLex.payWithEscrow(a.mandateId, counterparty, units("1.5"), ZERO32, ZERO32, 3600n);
+  await record("Agent tries to lock 1.5 in escrow, over the per-payment cap", refusedEscrow.txHash, refusedEscrow.receiptId, ["REFUSE", "OVER_TX_CAP"]);
+  if (refusedEscrow.escrowId !== undefined) throw new Error("refused escrow unexpectedly locked funds");
+
   const escrow = await agentLex.payWithEscrow(a.mandateId, counterparty, units("0.5"), ZERO32, ZERO32, 3600n);
-  await record(
-    `Agent locks 0.5 in escrow #${escrow.escrowId}`,
-    escrow.txHash,
-    await receiptIdOf(escrow.txHash),
-    ["ALLOW", "OK"]
-  );
+  await record(`Agent locks 0.5 in escrow #${escrow.escrowId}`, escrow.txHash, escrow.receiptId, ["ALLOW", "OK"]);
+  if (escrow.escrowId === undefined) throw new Error("escrow was not locked");
   await record("Agent attests delivery", await agentLex.attestEscrow(escrow.escrowId));
   await record("Escrow released to the counterparty", await agentLex.releaseEscrow(escrow.escrowId));
 
