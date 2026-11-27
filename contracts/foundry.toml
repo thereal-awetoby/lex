@@ -4,10 +4,14 @@ out = "out"
 libs = ["lib"]
 remappings = ["forge-std/=lib/forge-std/src/"]
 optimizer = true
+# Low runs favor small bytecode: Mandate must stay under the 24,576-byte limit.
 optimizer_runs = 1
 evm_version = "paris"
 solc_version = "0.8.24"
 via_ir = true
+# Omit CBOR metadata to preserve deployment size headroom.
+cbor_metadata = false
+bytecode_hash = "none"
 
 [profile.default.fuzz]
 runs = 256

@@ -26,7 +26,7 @@ lex.connect(
 );
 ```
 
-`new Lex({ mandateAddress, rpcUrl?, chain? })` defaults to HSK mainnet (chain 177, `https://mainnet.hsk.xyz`). Pass `chain` for testnet or a local node. One instance holds one wallet, so use one per key (owner, agent, approver).
+`new Lex({ mandateAddress, rpcUrl?, chain? })` defaults to HSK mainnet (chain 177, `https://mainnet.hsk.xyz`). Pass `chain` for testnet or a local node. One instance holds one wallet, so use one per key (owner, agent, approver, relayer).
 
 - **Amounts** are in the token's smallest unit. USDC.e and USDT have 6 decimals: `parseUnits("2.5", 6)`.
 - **Categories** are bytes32: `encodeCategory("compute")`, or `CATEGORIES.COMPUTE`.
@@ -72,7 +72,7 @@ For the two log queries, pass the contract's deploy block as `fromBlock` rather 
 | `proposeRules(mandateId, rules)` | Applies at once if `timelockForRuleChange` is 0, otherwise queues the change |
 | `executeRuleChange(mandateId)` | Applies a queued change once the timelock has passed |
 | `cancelRuleChange(mandateId)` | Drops a queued change |
-| `pause(mandateId)` | Owner or approver |
+| `pause(mandateId)` | Owner, approver or guardian |
 | `unpause(mandateId)` | Owner only |
 
 ## Agent
@@ -91,7 +91,16 @@ For the two log queries, pass the contract's deploy block as `fromBlock` rather 
 
 `buildSpendIntent` uses the connected agent wallet's next nonce and a default ten-minute deadline. `signSpendIntent` signs the EIP-712 data without a transaction. A relayer uses `canExecuteIntent` and `executeSpendIntent`; the latter returns `{ receiptId, txHash }`. A valid refusal consumes the nonce; an invalid or expired intent reverts. `getIntentNonce` reads the next nonce. The signing type is exported as `SPEND_INTENT_TYPES`.
 
-An agent checks in via `heartbeat(mandateId)`.
+An agent checks in via `heartbeat(mandateId)`. The signature domain is `{ name: "LexMandate", version: "1", chainId, verifyingContract }` and covers the mandate, amount, counterparty, category, reference, HSP order ID, nonce and deadline.
+
+```ts
+const intent = await agentLex.buildSpendIntent({
+  mandateId: 1n, amount: parseUnits("2", 6), counterparty, category: CATEGORIES.COMPUTE,
+});
+const signature = await agentLex.signSpendIntent(intent);
+const { receiptId } = await relayerLex.executeSpendIntent(intent, signature);
+const receipt = await relayerLex.getReceipt(receiptId); // inspect receipt.decision
+```
 
 The standalone `relaySpendIntent(url, intent, signature)` sends decimal-string integers to a relayer. Its result distinguishes `relayed` (a transaction was submitted) from `paid` (the relayer observed an ALLOW receipt). A dry-run refusal has no transaction; a mined refusal can still occur if state changes after the dry run. Verify the transaction and receipt independently before acting on an untrusted relayer's response. MCP performs that verification when the relayer reports a payment.
 
@@ -143,9 +152,11 @@ Without `merchantSigner` a cart is rejected, unless `allowUnverifiedMerchant` is
 
 - `HSK_MAINNET`, `HSK_TESTNET`: `{ id, name, rpcUrl, explorerUrl, tokens: { USDC_E, USDT } }`
 - `REASON_CODES`: code to name, listed in [RECEIPTS.md](RECEIPTS.md)
+- `EXCEPTIONABLE_CODES`: soft-rule refusals a governed mandate can turn into an exception request
 - `CATEGORIES`: `COMPUTE`, `DATA`, `FREELANCE`, `OTHER`, `ESCROW`
 - `encodeCategory(name)`: same encoding as Solidity `bytes32("name")`, up to 32 bytes
 - Enums: `ExceptionMode`, `Decision`, `SettlementRail`, `EscrowState`
+- Types: `MandateRules`, `Receipt`, `SpendIntent`; signing types: `SPEND_INTENT_TYPES`
 - ABIs: `MANDATE_ABI`, `ERC20_ABI`, `FACTORY_ABI`
 
 ## Example

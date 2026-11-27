@@ -34,11 +34,19 @@ Each mandate stores:
 - Absolute ceiling: the largest single payment possible, even through an exception
 - Rule changes can be timelocked; the owner can update lists and tiers independently
 
-`canSpend(mandateId, amount, counterparty, category)` is a free view call that returns whether the rules allow a payment and a reason code. It does not check whether a caller is a bound agent.
+`canSpend(mandateId, amount, counterparty, category)` is a free view call that returns whether the rules allow a payment and a reason code. It does not check whether a caller is a bound agent. `reasonCodeString(code)` returns an on-chain code name.
 
-Additional controls include per-agent rolling sub-caps, category envelopes, a heartbeat policy, and a pause-only guardian. `canAgentSpend` includes agent binding, sub-cap, and heartbeat; `canSpendBatch` checks each item independently. `canExecuteIntent` checks a signed EIP-712 intent, including its signer, nonce, and deadline. Intents use the `LexMandate` version `1` domain and are bound to the chain and contract. A valid intent consumes its nonce even if policy refuses it.
+Additional controls include per-agent rolling sub-caps, category envelopes, a heartbeat policy, and a pause-only guardian. `canAgentSpend` includes agent binding, sub-cap, and heartbeat; `canSpendBatch` checks each item independently. `canExecuteIntent` checks a signed EIP-712 intent, including its signer, nonce, and deadline. A queued rule change emits `RuleChangeQueued` and can be read via `getPendingRuleChange`. Intents use the `LexMandate` version `1` domain and are bound to the chain and contract. A valid intent consumes its nonce even if policy refuses it.
 
 A category is chosen by the agent, so an envelope cannot prevent a compromised agent from using a different category. Sub-caps, envelopes, lists, tiers, and heartbeat policies are not included in `policyHash` and are not covered by the rules timelock.
+
+| Role | Powers |
+|------|--------|
+| Owner | Set rules and limits, fund, withdraw, bind or rotate agents, unpause |
+| Agent | Pay, sign intents, request exceptions, heartbeat, attest escrow delivery |
+| Approver | Approve or reject exceptions, pause |
+| Guardian | Pause only |
+| Relayer | Submit a signed intent and pay its gas |
 
 ## Exceptions
 
@@ -77,6 +85,7 @@ See [docs/HSP.md](docs/HSP.md).
 
 ```
 contracts/   Solidity 0.8.24, Foundry. Mandate.sol, MandateFactory.sol, tests
+  test/      Mandate.t.sol, MandateLimitsIntent.t.sol, MandateAgentCap.t.sol, MandateEnvelopesIntent.t.sol
 sdk/         TypeScript SDK (viem): Lex client and HSP helpers
 mcp/         MCP server for agents to check payments, spend, request exceptions and use escrow
 app/         Next.js owner console, public pages and intent relayer
@@ -106,9 +115,10 @@ cd contracts
 git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
 forge test -vvv
 
-# deploy (configure the key locally; never share it)
+# deploy and verify (configure the key locally; never share it)
 export DEPLOYER_PRIVATE_KEY=0x...
-forge script script/Deploy.s.sol --rpc-url https://mainnet.hsk.xyz --broadcast
+forge script script/Deploy.s.sol --rpc-url https://mainnet.hsk.xyz --broadcast \
+  --verify --verifier blockscout --verifier-url https://hsk.blockscout.com/api/
 
 # sdk, then app
 cd ../sdk && npm install && npm run build
@@ -119,7 +129,7 @@ cd ../mcp && npm install
 LEX_MANDATE_ADDRESS=0x... LEX_AGENT_PRIVATE_KEY=0x... npx tsx src/server.ts
 ```
 
-Environment variables are listed in `.env.example`. CI builds and tests the contracts, type-checks the SDK, and builds the app on every push.
+Environment variables are listed in `.env.example`. The app defaults to chain 177. Set `NEXT_PUBLIC_CHAIN_ID=133` for testnet and configure the corresponding deployment address and deployment block. Empty RPC/explorer overrides use the selected network's defaults. CI builds and tests the contracts and SDK, builds the app, and runs the proof exercise on local Anvil.
 
 ## Docs
 
@@ -133,5 +143,3 @@ Environment variables are listed in `.env.example`. CI builds and tests the cont
 ## License
 
 MIT
-
-The app defaults to chain 177. Set `NEXT_PUBLIC_CHAIN_ID=133` for testnet and configure the corresponding deployment address and deployment block. Empty RPC/explorer overrides use the selected network's defaults. CI also runs the proof exercise on local Anvil.
