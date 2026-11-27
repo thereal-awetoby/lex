@@ -1,124 +1,89 @@
 # Receipts
 
-Every spend decision produces an on-chain receipt — whether the spend was allowed or refused.
+A receipt is the on-chain record of one spend decision. Receipts are stored in the Mandate contract and cannot be changed or deleted.
 
-## Receipt Structure
+## When a receipt is written
+
+| Call | Decision |
+|------|----------|
+| `spend` by a bound agent | ALLOW or REFUSE |
+| `payWithEscrow` by a bound agent | ALLOW (funds locked) or REFUSE (nothing locked) |
+| An exception executes, through `approveException` reaching its threshold or `executeException` | EXCEPTION |
+
+A refusal is a normal outcome: the transaction succeeds and the receipt records the reason. No receipt is written when a call reverts. That happens when the caller is not a bound agent (`NOT_AGENT`), when an escrow has no timeout (`TIMEOUT_REQUIRED`), or when a token transfer fails. Releasing or refunding an escrow does not write a receipt. It emits `EscrowReleased` or `EscrowRefunded`.
+
+Receipt ids are unique across all mandates.
+
+## Fields
 
 ```solidity
 struct Receipt {
     uint256 receiptId;
     uint256 mandateId;
-    bytes32 policyHash;
-    Decision decision;      // ALLOW (0), REFUSE (1), EXCEPTION (2)
-    uint16 reasonCode;      // 0-14, see reason codes
+    bytes32 policyHash;   // keccak256(abi.encode(mandateId, rules)) when the decision was made
+    Decision decision;    // ALLOW, REFUSE or EXCEPTION
+    uint16 reasonCode;    // 0 unless REFUSE
     uint256 amount;
     address token;
     address counterparty;
-    bytes32 category;
-    bytes32 ref;            // invoice / order id hash
-    uint256 exceptionId;    // 0 for normal spends
-    bytes32 hspOrderId;     // HSP order id (0x0 if unused)
-    bytes32 txRef;          // reserved
+    bytes32 category;     // e.g. bytes32("compute"); "escrow" for escrow locks
+    bytes32 ref;          // caller's reference; the cart hash for HSP payments
+    uint256 exceptionId;  // set on EXCEPTION receipts
+    bytes32 hspOrderId;   // keccak256 of the HSP payment request id, for HSP payments
+    bytes32 txRef;        // escrow id on escrow-lock receipts, otherwise 0
     uint256 timestamp;
 }
 ```
 
-`policyHash` is `keccak256(abi.encode(mandateId, rules))` captured at decision time, so auditors can verify exactly which ruleset governed a spend.
+## Reason codes
 
-## Decision Types
+Rules are checked in the order below, and the first rule that fails is the reason.
 
-| Decision | Meaning |
-|----------|---------|
-| ALLOW | Spend executed within mandate rules |
-| REFUSE | Spend blocked by a rule violation |
-| EXCEPTION | Spend executed via approved exception (governed mandates) |
+| Code | Name | Meaning | Exception possible |
+|------|------|---------|--------------------|
+| 0 | OK | All rules passed | |
+| 1 | PAUSED | The mandate is paused | No |
+| 5 | DENYLISTED | The counterparty is denylisted | No |
+| 12 | OVER_ABSOLUTE_CEILING | Above the largest payment the mandate allows | No |
+| 2 | OVER_TX_CAP | Above the per-payment cap | Yes |
+| 3 | OVER_ROLLING | Would exceed the rolling window cap | Yes |
+| 4 | NOT_ALLOWLISTED | Allowlisting is on and the counterparty is not on it | Yes |
+| 6 | TIER_TOO_LOW | The counterparty's tier is below the minimum | Yes |
+| 10 | OVER_COUNTERPARTY_CAP | Would exceed the per-counterparty cap for the window | Yes |
+| 11 | OVER_CATEGORY_CAP | Would exceed the per-category cap for the window | Yes |
+| 7 | COOLDOWN | Too soon after the last payment | Yes |
+| 8 | WINDOW_CLOSED | Outside the mandate's active hours | Yes |
+| 14 | INSUFFICIENT_FUNDS | Not enough balance | No |
+| 9 | EXCEPTION_REQUIRED | Governed mandate: refused, and an exception can be requested | |
+| 13 | AGENT_NOT_BOUND | Reserved. A spend from an unbound caller reverts with `NOT_AGENT`, so no receipt carries this code | |
 
-## Reason Codes
+In a governed mandate, a refusal that an exception could override is recorded as 9 rather than its own code. `canSpend` with the same inputs returns the specific rule. Escrow has no exception path, so a refused escrow always records the specific rule.
 
-| Code | Name | Description |
-|------|------|-------------|
-| 0 | OK | All rules passed |
-| 1 | PAUSED | Mandate is paused |
-| 2 | OVER_TX_CAP | Amount exceeds per-transaction cap |
-| 3 | OVER_ROLLING | Would exceed rolling window cap |
-| 4 | NOT_ALLOWLISTED | Counterparty not on allowlist (when required) |
-| 5 | DENYLISTED | Counterparty is denylisted |
-| 6 | TIER_TOO_LOW | Counterparty tier below minimum |
-| 7 | COOLDOWN | Too soon since last spend |
-| 8 | WINDOW_CLOSED | Outside active time window |
-| 9 | EXCEPTION_REQUIRED | Governed mandate, needs exception approval |
-| 10 | OVER_COUNTERPARTY_CAP | Would exceed per-counterparty cap |
-| 11 | OVER_CATEGORY_CAP | Would exceed per-category cap |
-| 12 | OVER_ABSOLUTE_CEILING | Would exceed absolute ceiling |
-| 13 | AGENT_NOT_BOUND | Caller is not a bound agent |
-| 14 | INSUFFICIENT_FUNDS | Mandate balance too low |
+## Policy hash
 
-Note: reason code **9** is emitted on a REFUSE when a governed mandate blocks a spend that *could* be escalated to an exception. Codes 12 (absolute ceiling) and 14 (insufficient funds) are never escalated to exceptions.
+`policyHash` identifies the exact rules a decision was made under. To check it, read the mandate's rules, compute `keccak256(abi.encode(mandateId, rules))`, and compare. Every rule change emits `RulesUpdated(mandateId, newPolicyHash)`, so an older hash can be matched to the change that introduced it.
 
-## Querying Receipts
-
-### On-chain
-
-```solidity
-function getReceipt(uint256 receiptId) external view returns (Receipt memory);
-```
-
-### SDK
-
-```typescript
-const receipt = await lex.getReceipt(receiptId);
-```
-
-### Events
+## Events
 
 ```solidity
 event SpendDecision(
     uint256 indexed mandateId,
     uint256 indexed receiptId,
-    uint8 decision,
+    Decision decision,
     uint16 reasonCode,
     uint256 amount,
     address counterparty,
     bytes32 category
 );
+event ExceptionSpend(uint256 indexed mandateId, uint256 indexed exceptionId, uint256 indexed receiptId);
+event EscrowLocked(uint256 indexed mandateId, uint256 indexed escrowId, uint256 amount);
 ```
 
-Filter by `mandateId` (or `receiptId`) to track all decisions:
+There is one `SpendDecision` per receipt. Filtering by `receiptId` finds the transaction that wrote a receipt, which is how the app links it on HashKey Scan.
 
-```typescript
-const logs = await lex.getSpendDecisions(1n);
-```
+## Reading receipts
 
-### MCP Server
-
-```
-Tool: get_receipt
-Args: { receiptId: "1" }
-```
-
-## Public Verification
-
-Receipts are publicly verifiable at:
-
-```
-/r/:receiptId
-```
-
-The verify page shows:
-
-- Decision (color-coded: green=ALLOW, red=REFUSE, yellow=EXCEPTION)
-- All receipt fields
-- Link to transaction on HashKeyScan
-- Link to the governing mandate
-
-Anyone with a receipt ID can independently verify the spend decision — no authentication required.
-
-## Audit Trail
-
-The receipt system guarantees:
-
-1. Every `spend()` call produces a receipt, whether allowed or refused
-2. REFUSE receipts document why a spend was blocked (with `reasonCode`)
-3. EXCEPTION receipts link back to the exception approval chain (`exceptionId`)
-4. `policyHash` ties each decision to the exact rules in effect
-5. All receipts are immutable and on-chain
+- Contract: `getReceipt(receiptId)`
+- SDK: `lex.getReceipt(receiptId)`, `lex.getSpendDecisions(mandateId)`
+- MCP: `get_receipt`, `list_receipts`
+- App: `/r/:receiptId` for one receipt, `/m/:mandateId` for every decision of a mandate. No wallet needed.

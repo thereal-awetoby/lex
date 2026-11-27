@@ -370,7 +370,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ((args!.ref as string) || ZERO32) as `0x${string}`,
           BigInt(args!.timeoutSeconds as string)
         );
-        return { content: [{ type: "text", text: JSON.stringify(result, replacer, 2) }] };
+        const receipt = await lex.getReceipt(result.receiptId);
+        const decision = ["ALLOW", "REFUSE", "EXCEPTION"][Number(receipt.decision)];
+        return {
+          content: [{ type: "text", text: JSON.stringify({
+            decision,
+            reason: REASON_CODES[Number(receipt.reasonCode)],
+            locked: result.escrowId !== undefined,
+            ...result,
+          }, replacer, 2) }],
+          isError: decision === "REFUSE",
+        };
       }
 
       case "attest_escrow": {

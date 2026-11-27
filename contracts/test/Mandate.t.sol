@@ -496,6 +496,36 @@ contract MandateTest is Test {
         mandate.payWithEscrow(mandateId, counterparty, 50e6, bytes32("schema-1"), bytes32("ref-1"), 0);
     }
 
+    function test_escrow_refusalWritesReceipt() public {
+        mandateId = _createDefaultMandate();
+        _fundMandate(mandateId, 500e6);
+
+        vm.prank(agent);
+        uint256 escrowId = mandate.payWithEscrow(
+            mandateId, counterparty, 150e6, bytes32("schema-1"), bytes32("ref-1"), 3600
+        );
+        assertEq(escrowId, 0);
+        IMandate.Receipt memory r = mandate.getReceipt(1);
+        assertEq(uint8(r.decision), uint8(IMandate.Decision.REFUSE));
+        assertEq(r.reasonCode, 2);
+        (,,, uint256 balance,,) = mandate.getMandate(mandateId);
+        assertEq(balance, 500e6);
+    }
+
+    function test_escrow_pausedWritesRefuseReceipt() public {
+        mandateId = _createDefaultMandate();
+        _fundMandate(mandateId, 500e6);
+        vm.prank(owner);
+        mandate.pause(mandateId);
+        vm.prank(agent);
+        uint256 escrowId = mandate.payWithEscrow(
+            mandateId, counterparty, 50e6, bytes32("schema-1"), bytes32("ref-1"), 3600
+        );
+        assertEq(escrowId, 0);
+        assertEq(uint8(mandate.getReceipt(1).decision), uint8(IMandate.Decision.REFUSE));
+        assertEq(mandate.getReceipt(1).reasonCode, 1);
+    }
+
     function test_escrow_writesReceipt() public {
         mandateId = _createDefaultMandate();
         _fundMandate(mandateId, 500e6);
@@ -653,8 +683,13 @@ contract MandateTest is Test {
         assertEq(mandate.getReceipt(receiptId).reasonCode, 6);
 
         vm.prank(agent);
-        vm.expectRevert("SPEND_CHECK_FAILED:6");
-        mandate.payWithEscrow(mandateId, counterparty, 50e6, bytes32("s"), bytes32("r"), 3600);
+        uint256 escrowId = mandate.payWithEscrow(mandateId, counterparty, 50e6, bytes32("s"), bytes32("r"), 3600);
+        assertEq(escrowId, 0);
+        IMandate.Receipt memory escrowReceipt = mandate.getReceipt(receiptId + 1);
+        assertEq(uint8(escrowReceipt.decision), uint8(IMandate.Decision.REFUSE));
+        assertEq(escrowReceipt.reasonCode, 6);
+        (,,, uint256 balance,,) = mandate.getMandate(mandateId);
+        assertEq(balance, 500e6);
     }
 
     function test_tier_isIsolatedByMandate() public {
@@ -690,6 +725,21 @@ contract MandateTest is Test {
         uint256 receiptId = mandate.approveException(exceptionId, bytes32(0));
         assertEq(uint8(mandate.getReceipt(receiptId).decision), uint8(IMandate.Decision.EXCEPTION));
         assertEq(usdc.balanceOf(counterparty), 50e6);
+    }
+
+    function test_governed_overCeilingRecordedAsCeiling() public {
+        IMandate.Rules memory rules = _defaultRules();
+        rules.exceptionMode = IMandate.ExceptionMode.GOVERNED;
+        rules.absoluteCeiling = 500e6;
+        mandateId = _createMandateWithRules(rules, new address[](0));
+        _fundMandate(mandateId, 1000e6);
+
+        vm.prank(agent);
+        uint256 receiptId = mandate.spend(mandateId, 600e6, counterparty, bytes32("compute"), bytes32(0), bytes32(0));
+        assertEq(mandate.getReceipt(receiptId).reasonCode, 12);
+        vm.prank(agent);
+        receiptId = mandate.spend(mandateId, 150e6, counterparty, bytes32("compute"), bytes32(0), bytes32(0));
+        assertEq(mandate.getReceipt(receiptId).reasonCode, 9);
     }
 
     function test_canSpend_denylistNotMaskedByAllowlist() public {

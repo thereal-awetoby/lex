@@ -18,14 +18,14 @@ Deploy block:
 
 ## What the proof run does
 
-`scripts/exercise-mainnet.ts` runs against the deployed Mandate contract. It reads each receipt back from the chain and checks it against the expected decision. If any decision differs, it exits with an error.
+`scripts/exercise-mainnet.ts` runs against a Mandate contract deployed from the current code. Older deployments that revert on refused escrow need to be redeployed for this exercise. The script reads each receipt back from the chain and checks it against the expected decision. If any decision differs, it exits with an error.
 
 1. Creates a hard-law mandate: 1 per payment, 5 per 24h, absolute ceiling 2, the counterparty allowlisted, `0x…dEaD` denylisted. Funds it with 3.
 2. Agent pays 0.5: **ALLOW**.
 3. Agent pays 1.5: **REFUSE**, `OVER_TX_CAP`.
 4. Agent pays the denylisted address: **REFUSE**, `DENYLISTED`.
 5. Owner pauses. Agent pays: **REFUSE**, `PAUSED`. Owner unpauses.
-6. Agent locks 0.5 in escrow (**ALLOW** receipt), attests delivery, and the escrow is released to the counterparty.
+6. Agent tries to lock 1.5 in escrow: **REFUSE**, `OVER_TX_CAP`, nothing locked. Agent locks 0.5 (**ALLOW** receipt), attests delivery, and the escrow is released to the counterparty.
 7. Agent pays a 0.25 HSP Cart Mandate through `payHspCart`: **ALLOW**. The run checks that the receipt carries the HSP order id. The cart is signed by the owner key acting as merchant, and no HSP merchant API call is made.
 8. Creates a governed mandate where exceptions need 1 approval. Funds it with 2. Agent pays 1.5: **REFUSE**, `EXCEPTION_REQUIRED`. Agent requests an exception, the owner approves, and it pays out: **EXCEPTION**.
 9. Owner withdraws what is left in both mandates.

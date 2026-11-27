@@ -158,6 +158,13 @@ export const MANDATE_ABI = [
     outputs: [],
   },
   {
+    name: "cancelRuleChange",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "mandateId", type: "uint256" }],
+    outputs: [],
+  },
+  {
     name: "executeRuleChange",
     type: "function",
     stateMutability: "nonpayable",

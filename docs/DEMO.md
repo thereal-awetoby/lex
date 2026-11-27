@@ -1,147 +1,81 @@
-# Demo Walkthrough
+# Demo
 
-## Setup
+There are four ways to see Lex work: the proof run, the owner console, an agent over MCP, and the public pages.
+
+## 1. Proof run on a local chain
+
+You need Foundry and Node 22. This deploys Lex to a local chain, then runs every decision type and checks each result.
 
 ```bash
-# Install dependencies
-cd contracts && forge install
-cd ../sdk && npm install
-cd ../mcp && npm install
-cd ../app && npm install
-
-# Copy env
-cp .env.example .env
-# Fill in: DEPLOYER_PRIVATE_KEY, AGENT_PRIVATE_KEY, HSK_RPC_URL, TOKEN_ADDRESS
+anvil
 ```
 
-## 1. Deploy
+In a second terminal:
 
 ```bash
 cd contracts
-forge create src/MandateFactory.sol:MandateFactory \
-  --rpc-url $HSK_RPC_URL \
-  --private-key $DEPLOYER_PRIVATE_KEY
-```
+git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
+export DEPLOYER_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+forge script script/Deploy.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
+# note the Mandate address it prints
 
-Note the factory address. Read `mandate()` from it to get the Mandate contract address.
+forge create src/mocks/MockERC20.sol:MockERC20 --rpc-url http://127.0.0.1:8545 \
+  --private-key $DEPLOYER_PRIVATE_KEY --broadcast --constructor-args "USD Coin" USDC 6
+# note the token address
 
-## 2. Create a Mandate
+cast send <TOKEN> "mint(address,uint256)" 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 100000000 \
+  --rpc-url http://127.0.0.1:8545 --private-key $DEPLOYER_PRIVATE_KEY
 
-Using the owner console (`app/`):
-
-1. Connect wallet
-2. Set rules:
-   - Per-tx cap: 100 USDC.e
-   - Rolling cap: 500 USDC.e / 24h
-   - Per-counterparty cap: 200 USDC.e
-   - Cooldown: 60 seconds
-   - Exception mode: Hard Law
-3. Select token: USDC.e
-4. Add agent address
-5. Submit — mandate ID returned
-
-## 3. Fund the Mandate
-
-In the mandate view:
-1. Enter amount (e.g., 1000 USDC.e)
-2. Click Fund — auto-approves token then transfers
-
-## 4. Agent Spends
-
-Headless agent script:
-
-```bash
-export LEX_MANDATE_ADDRESS=0x...
-export LEX_AGENT_PRIVATE_KEY=0x...
-
-node scripts/agent-pay.mjs \
-  --mandate 1 \
-  --to 0xCounterparty \
-  --amount 50 \
-  --memo "API subscription payment"
-```
-
-Output:
-```
-Pre-flight passed. Sending spend tx...
-Tx hash: 0x...
-Block: 12345, status: success
-Receipt ID: 1
-Decision: ALLOW
-```
-
-## 5. Verify Receipt
-
-Public page — no auth required:
-
-```
-https://your-app.vercel.app/r/1
-```
-
-Shows: decision (ALLOW), amount, counterparty, timestamp, mandate rules, tx link on HashKeyScan.
-
-## 6. MCP Server (AI Agent Integration)
-
-```bash
-export LEX_MANDATE_ADDRESS=0x...
-export LEX_AGENT_PRIVATE_KEY=0x...
-
-npx tsx mcp/src/server.ts
-```
-
-The MCP server exposes tools an AI agent can call:
-
-- `can_pay` — pre-flight check before spending
-- `pay` — execute a spend through the mandate
-- `get_receipt` — verify a past decision
-- `list_receipts` — audit trail for a mandate
-- `get_mandate` — read current rules and balances
-- `request_exception` — request exception (governed mandates)
-- `get_exception` — check exception status
-- `get_escrow` — check escrow status
-
-## 7. Test a Refusal
-
-Try spending over the per-tx cap:
-
-```bash
-node scripts/agent-pay.mjs \
-  --mandate 1 \
-  --to 0xCounterparty \
-  --amount 200
-```
-
-Output:
-```
-canSpend returned REFUSE — reason code: 2
-```
-
-Reason code 2 = OVER_TX_CAP. The receipt is still created on-chain documenting the refusal.
-
-## 8. Escrow Flow
-
-For counterparty-attested payments:
-
-1. Agent calls `payWithEscrow` — funds locked
-2. Counterparty calls `attestEscrow` — confirms delivery
-3. Owner calls `releaseEscrow` — funds transferred
-4. If timeout expires: `refundEscrow` returns funds to mandate
-
-## 9. Exception Flow (Governed Mandates)
-
-1. Create mandate with `exceptionMode: GOVERNED`, `exceptionApprovalThreshold: 2`
-2. Agent's spend gets REFUSE (e.g., over cap)
-3. Agent calls `requestException` — exception ID returned
-4. Approver 1 calls `approveException`
-5. Approver 2 calls `approveException` — threshold met, spend executes
-6. Receipt shows `Decision.EXCEPTION`
-
-## Mainnet Exercise
-
-Run the full flow on HSK mainnet:
-
-```bash
+cd .. && npm install
+HSK_RPC_URL=http://127.0.0.1:8545 LEX_MANDATE_ADDRESS=<MANDATE> TOKEN_ADDRESS=<TOKEN> \
+AGENT_PRIVATE_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d \
 npx tsx scripts/exercise-mainnet.ts
 ```
 
-Produces `docs/mainnet-proofs.json` with tx hashes and explorer links for every step.
+These are Anvil's public test keys. Use them only on a local chain. Replace `<TOKEN>` and `<MANDATE>` with the deployed addresses (without angle brackets).
+
+[MAINNET_PROOFS.md](MAINNET_PROOFS.md) lists each step. The same command with real keys and `https://mainnet.hsk.xyz` produces the mainnet proofs.
+
+## 2. Owner console
+
+```bash
+cd sdk && npm install && npm run build
+cd ../app && npm install
+NEXT_PUBLIC_MANDATE_ADDRESS=0x... NEXT_PUBLIC_DEPLOY_BLOCK=<block> npm run dev
+```
+
+1. Connect a wallet on HashKey Chain.
+2. **Create:** set the caps, ceiling, cooldown and minimum tier, and choose hard law or governed. For governed mandates, set the approvers and either the number of approvals or a time delay. Add the agent address, allowlist and denylist. The console shows the transaction link.
+3. **Manage:** load the mandate id, then **Fund**. Funding takes two transactions, approve and fund.
+4. **Agents:** bind or revoke agents, and set counterparty tiers. **Withdraw:** return unspent funds.
+5. **Activity:** every decision, with links to the receipts. **Exceptions:** approve, reject, or execute after a time delay.
+
+## 3. An agent over MCP
+
+```bash
+cd sdk && npm install && npm run build
+cd ../mcp && npm install
+LEX_MANDATE_ADDRESS=0x... LEX_AGENT_PRIVATE_KEY=0x... HSK_RPC_URL=https://mainnet.hsk.xyz \
+npx tsx src/server.ts
+```
+
+Add it to an MCP client as a stdio server with the same command and environment. Amounts are strings in the token's smallest unit (`"2000000"` is 2 USDC). Categories are names such as `"compute"`.
+
+Things to ask the agent to do:
+
+- Check a payment with `can_pay`
+- Pay within the limits with `pay`. The result is ALLOW with a receipt id
+- Pay over a cap with `pay`. The result is REFUSE with the reason. The tool marks it as an error so the agent doesn't assume it paid
+- On a governed mandate: `request_exception`, approve it in the console, and call `execute_exception` if the mandate uses a time delay
+- `pay_escrow`, then `attest_escrow` and `release_escrow`
+- Pay an HSP cart with `pay_hsp_cart`. This needs `LEX_HSP_MERCHANT_SIGNERS` set to the merchant's signer address
+- Review the history with `list_receipts`
+
+For a single payment from the command line, `scripts/agent-pay.mjs` lists its arguments at the top of the file.
+
+## 4. Public pages
+
+No wallet is needed.
+
+- `/r/:receiptId`: the decision and reason, every field, the transaction on HashKey Scan, and the mandate it belongs to
+- `/m/:mandateId`: the rules in plain terms, a payment checker that calls `canSpend`, and every decision the mandate has made
