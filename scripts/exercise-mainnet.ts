@@ -44,6 +44,7 @@ const RPC = process.env.HSK_RPC_URL || "https://mainnet.hsk.xyz";
 const MANDATE = process.env.LEX_MANDATE_ADDRESS as `0x${string}` | undefined;
 const OWNER_KEY = process.env.DEPLOYER_PRIVATE_KEY as Hex | undefined;
 const AGENT_KEY = process.env.AGENT_PRIVATE_KEY as Hex | undefined;
+const RELAYER_KEY = process.env.RELAYER_PRIVATE_KEY as Hex | undefined;
 const APP_URL = (process.env.APP_URL || "").replace(/\/$/, "");
 
 const DENYLISTED = "0x000000000000000000000000000000000000dEaD" as const;
@@ -63,7 +64,7 @@ interface Row {
   decision: string;
   reason: string;
   receiptId?: bigint;
-  txHash: Hex;
+  txHash?: Hex;
   ok: boolean;
 }
 
@@ -98,6 +99,8 @@ async function main() {
   const agentLex = new Lex({ mandateAddress: MANDATE, rpcUrl: RPC, chain }).connect(
     createWalletClient({ account: agent, chain, transport: http(RPC) })
   );
+  const relayer = privateKeyToAccount(RELAYER_KEY || OWNER_KEY);
+  const relayerLex = new Lex({mandateAddress: MANDATE, rpcUrl: RPC, chain}).connect(createWalletClient({account: relayer, chain, transport: http(RPC)}));
   const client = ownerLex.publicClient;
 
   // ── Preflight ──────────────────────────────────────────────────────
@@ -113,6 +116,7 @@ async function main() {
   for (const [name, address] of [
     ["owner", owner.address],
     ["agent", agent.address],
+    ["relayer", relayer.address],
   ] as const) {
     if ((await client.getBalance({ address })) === 0n) throw new Error(`${name} ${address} has no HSK for gas`);
   }
@@ -122,7 +126,7 @@ async function main() {
   const rows: Row[] = [];
 
   /** Reads the receipt from the chain and compares it with the expected decision and reason */
-  const record = async (step: string, txHash: Hex, receiptId?: bigint, expect?: [string, string]) => {
+  const record = async (step: string, txHash: Hex | undefined, receiptId?: bigint, expect?: [string, string]) => {
     let decision = "-";
     let reason = "-";
     if (receiptId !== undefined) {
@@ -231,6 +235,32 @@ async function main() {
     throw new Error("HSP receipt does not carry the order id");
   }
 
+  await record("Owner sets agent sub-cap to 1.5", await ownerLex.setAgentCap(a.mandateId, agent.address, units("1.5")));
+  s = await pay(a.mandateId, "0.5", counterparty);
+  await record("Agent exceeds sub-cap", s.txHash, s.receiptId, ["REFUSE", "OVER_AGENT_CAP"]);
+  await record("Owner removes sub-cap", await ownerLex.setAgentCap(a.mandateId, agent.address, 0n));
+  await record("Owner sets data envelope to 0.3", await ownerLex.setEnvelope(a.mandateId, CATEGORIES.DATA, units("0.3")));
+  s = await agentLex.spend(a.mandateId, units("0.4"), counterparty, CATEGORIES.DATA, ZERO32, ZERO32);
+  await record("Agent exceeds envelope", s.txHash, s.receiptId, ["REFUSE", "ENVELOPE_EXCEEDED"]);
+  await record("Owner removes envelope", await ownerLex.setEnvelope(a.mandateId, CATEGORIES.DATA, 0n));
+  await record("Owner requires heartbeat", await ownerLex.setHeartbeatPolicy(a.mandateId, 3600n));
+  s = await pay(a.mandateId, "0.1", counterparty);
+  await record("Agent pays without heartbeat", s.txHash, s.receiptId, ["REFUSE", "AGENT_HEARTBEAT_STALE"]);
+  await record("Agent sends heartbeat", await agentLex.heartbeat(a.mandateId));
+  s = await pay(a.mandateId, "0.1", counterparty);
+  await record("Agent pays after heartbeat", s.txHash, s.receiptId, ["ALLOW", "OK"]);
+  await record("Owner disables heartbeat", await ownerLex.setHeartbeatPolicy(a.mandateId, 0n));
+  const intent = await agentLex.buildSpendIntent({mandateId: a.mandateId, amount: units("0.2"), counterparty, category: CATEGORIES.COMPUTE});
+  const signature = await agentLex.signSpendIntent(intent);
+  const dryRun = await relayerLex.canExecuteIntent(intent, signature);
+  if (!dryRun.ok || dryRun.agent.toLowerCase() !== agent.address.toLowerCase()) throw new Error(`Intent dry run failed: ${dryRun.reason}`);
+  const relayed = await relayerLex.executeSpendIntent(intent, signature);
+  await record("Relayer submits signed intent", relayed.txHash, relayed.receiptId, ["ALLOW", "OK"]);
+  const replay = await relayerLex.canExecuteIntent(intent, signature);
+  const replayOk = !replay.ok && replay.reason === "INTENT_USED";
+  rows.push({step: "Replay dry run", decision: replay.ok ? "ALLOW" : "REFUSE", reason: replay.reason, ok: replayOk});
+  console.log(`${replayOk ? "ok  " : "FAIL"} Replay dry run -> ${replay.reason}`);
+
   // ── Governed mandate: exception ────────────────────────────────────
   const b = await ownerLex.createMandate({
     rules: { ...rules, exceptionMode: ExceptionMode.GOVERNED, exceptionApprovalThreshold: 1 },
@@ -265,7 +295,7 @@ async function main() {
   }
 
   // ── Proof table ────────────────────────────────────────────────────
-  const txCell = (h: Hex) => (explorer ? `[${h.slice(0, 10)}…](${explorer}/tx/${h})` : `\`${h}\``);
+  const txCell = (h?: Hex) => (!h ? "" : explorer ? `[${h.slice(0, 10)}…](${explorer}/tx/${h})` : `\`${h}\``);
   const receiptCell = (id?: bigint) =>
     id === undefined ? "" : APP_URL ? `[#${id}](${APP_URL}/r/${id})` : `#${id}`;
 

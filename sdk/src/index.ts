@@ -21,6 +21,7 @@ export {
   HSK_MAINNET,
   HSK_TESTNET,
   REASON_CODES,
+  EXCEPTIONABLE_CODES,
   CATEGORIES,
   encodeCategory,
 } from "./constants.js";
@@ -88,7 +89,19 @@ export interface Receipt {
   hspOrderId: `0x${string}`;
   txRef: `0x${string}`;
   timestamp: bigint;
+  agent: `0x${string}`;
 }
+
+export interface SpendIntent {
+  mandateId: bigint; amount: bigint; counterparty: `0x${string}`; category: `0x${string}`;
+  ref: `0x${string}`; hspOrderId: `0x${string}`; nonce: bigint; deadline: bigint;
+}
+export const SPEND_INTENT_TYPES = { SpendIntent: [
+  {name: "mandateId", type: "uint256"}, {name: "amount", type: "uint256"},
+  {name: "counterparty", type: "address"}, {name: "category", type: "bytes32"},
+  {name: "ref", type: "bytes32"}, {name: "hspOrderId", type: "bytes32"},
+  {name: "nonce", type: "uint256"}, {name: "deadline", type: "uint256"},
+] } as const;
 
 export interface MandateInfo {
   owner: `0x${string}`;
@@ -631,6 +644,67 @@ export class Lex {
     });
     await this.waitOk(hash);
     return hash;
+  }
+
+  async canAgentSpend(mandateId: bigint, agent: `0x${string}`, amount: bigint, counterparty: `0x${string}`, category: `0x${string}`): Promise<CanSpendResult> {
+    const [ok, reasonCode] = await this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "canAgentSpend", args: [mandateId, agent, amount, counterparty, category]});
+    return {ok, reasonCode, reason: REASON_CODES[reasonCode] ?? `UNKNOWN_${reasonCode}`};
+  }
+  async canSpendBatch(mandateId: bigint, items: {amount: bigint; counterparty: `0x${string}`; category: `0x${string}`}[]): Promise<CanSpendResult[]> {
+    const [oks, codes] = await this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "canSpendBatch", args: [mandateId, items.map(i => i.amount), items.map(i => i.counterparty), items.map(i => i.category)]});
+    return oks.map((ok, i) => ({ok, reasonCode: codes[i], reason: REASON_CODES[codes[i]] ?? `UNKNOWN_${codes[i]}`}));
+  }
+  async getAgentCap(mandateId: bigint, agent: `0x${string}`): Promise<{cap: bigint; spentInWindow: bigint}> {
+    const [cap, spentInWindow] = await this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "getAgentCap", args: [mandateId, agent]});
+    return {cap, spentInWindow};
+  }
+  setAgentCap(mandateId: bigint, agent: `0x${string}`, cap: bigint) { return this.write("setAgentCap", [mandateId, agent, cap]); }
+  heartbeat(mandateId: bigint) { return this.write("heartbeat", [mandateId]); }
+  setHeartbeatPolicy(mandateId: bigint, seconds: bigint) { return this.write("setHeartbeatPolicy", [mandateId, seconds]); }
+  setGuardian(mandateId: bigint, guardian: `0x${string}`) { return this.write("setGuardian", [mandateId, guardian]); }
+  setEnvelope(mandateId: bigint, category: `0x${string}`, budget: bigint) { return this.write("setEnvelope", [mandateId, category, budget]); }
+  async getGuardian(mandateId: bigint) {
+    return this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "guardian", args: [mandateId]});
+  }
+  async getHeartbeat(mandateId: bigint, agent: `0x${string}`) {
+    const [maxSilence, lastHeartbeat, block] = await Promise.all([
+      this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "heartbeatMaxSilence", args: [mandateId]}),
+      this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "lastHeartbeat", args: [mandateId, agent]}),
+      this.publicClient.getBlock(),
+    ]);
+    return { maxSilence, lastHeartbeat, stale: maxSilence > 0n && (lastHeartbeat === 0n || block.timestamp > lastHeartbeat + maxSilence) };
+  }
+  async getEnvelope(mandateId: bigint, category: `0x${string}`) {
+    const [budget, spent] = await this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "getEnvelope", args: [mandateId, category]});
+    return {budget, spent, remaining: budget === 0n ? null : spent >= budget ? 0n : budget - spent};
+  }
+  async getPendingRuleChange(mandateId: bigint) {
+    const [pending, effectiveAt, newRules] = await this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "getPendingRuleChange", args: [mandateId]});
+    return { pending, effectiveAt, newRules };
+  }
+  async getIntentNonce(agent: `0x${string}`) {
+    return this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "intentNonces", args: [agent]});
+  }
+  async buildSpendIntent(p: {mandateId: bigint; amount: bigint; counterparty: `0x${string}`; category: `0x${string}`; ref?: `0x${string}`; hspOrderId?: `0x${string}`; deadline?: bigint}): Promise<SpendIntent> {
+    const zero = `0x${"00".repeat(32)}` as `0x${string}`;
+    return { ...p, ref: p.ref ?? zero, hspOrderId: p.hspOrderId ?? zero, nonce: await this.getIntentNonce(this.requireWallet().account!.address), deadline: p.deadline ?? BigInt(Math.floor(Date.now() / 1000) + 600) };
+  }
+  async signSpendIntent(intent: SpendIntent): Promise<`0x${string}`> {
+    const wallet = this.requireWallet(); const chainId = await this.publicClient.getChainId();
+    return wallet.signTypedData({ account: wallet.account!, domain: {name: "LexMandate", version: "1", chainId, verifyingContract: this.mandateAddress}, types: SPEND_INTENT_TYPES, primaryType: "SpendIntent", message: intent });
+  }
+  async canExecuteIntent(intent: SpendIntent, signature: `0x${string}`): Promise<CanSpendResult & {agent: `0x${string}`}> {
+    const [ok, reasonCode, agent] = await this.publicClient.readContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "canExecuteIntent", args: [intent, signature]});
+    return {ok, reasonCode, reason: REASON_CODES[reasonCode] ?? `UNKNOWN_${reasonCode}`, agent};
+  }
+  async executeSpendIntent(intent: SpendIntent, signature: `0x${string}`): Promise<{receiptId: bigint; txHash: `0x${string}`}> {
+    const wallet = this.requireWallet();
+    const hash = await wallet.writeContract({address: this.mandateAddress, abi: MANDATE_ABI, functionName: "executeSpendIntent", args: [intent, signature], chain: this.publicClient.chain, account: wallet.account!});
+    const tx = await this.waitOk(hash);
+    const logs = parseEventLogs({abi: MANDATE_ABI, logs: tx.logs.filter(log => log.address.toLowerCase() === this.mandateAddress.toLowerCase()), eventName: "SpendDecision"});
+    const receiptId = logs[0]?.args.receiptId;
+    if (receiptId === undefined) throw new Error("Missing SpendDecision event for intent transaction");
+    return {receiptId, txHash: hash};
   }
 
   // ── Event queries ──────────────────────────────────────────────────

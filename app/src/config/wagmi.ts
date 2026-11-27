@@ -9,7 +9,7 @@ export const hskMainnet: Chain = {
     default: { http: ["https://mainnet.hsk.xyz"] },
   },
   blockExplorers: {
-    default: { name: "HashKey Scan", url: "https://hashkeyscan.io" },
+    default: { name: "Blockscout", url: "https://hsk.blockscout.com" },
   },
 };
 
@@ -21,7 +21,7 @@ export const hskTestnet: Chain = {
     default: { http: ["https://testnet.hsk.xyz"] },
   },
   blockExplorers: {
-    default: { name: "HashKey Scan", url: "https://testnet.hashkeyscan.io" },
+    default: { name: "Blockscout", url: "https://testnet-explorer.hskchain.net" },
   },
 };
 

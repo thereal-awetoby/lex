@@ -51,6 +51,7 @@ interface IMandate {
         bytes32 hspOrderId;
         bytes32 txRef;
         uint256 timestamp;
+        address agent;
     }
 
     struct ExceptionRequest {
@@ -64,6 +65,7 @@ interface IMandate {
         uint256 approvalCount;
         bool resolved;
         bool approved;
+        address agent;
     }
 
     struct EscrowLeg {
@@ -77,6 +79,17 @@ interface IMandate {
         EscrowState state;
         uint256 lockedAt;
         uint256 timeout;
+    }
+
+    struct SpendIntent {
+        uint256 mandateId;
+        uint256 amount;
+        address counterparty;
+        bytes32 category;
+        bytes32 ref;
+        bytes32 hspOrderId;
+        uint256 nonce;
+        uint256 deadline;
     }
 
     // ── Reason codes ───────────────────────────────────────────────────
@@ -128,6 +141,15 @@ interface IMandate {
     event ApproverAdded(uint256 indexed mandateId, address approver);
     event ApproverRemoved(uint256 indexed mandateId, address approver);
     event CounterpartyTierSet(uint256 indexed mandateId, address indexed counterparty, uint256 tier);
+
+    event RuleChangeQueued(uint256 indexed mandateId, bytes32 newPolicyHash, uint256 effectiveAt);
+    event RuleChangeCancelled(uint256 indexed mandateId);
+    event AgentCapSet(uint256 indexed mandateId, address indexed agent, uint256 cap);
+    event GuardianSet(uint256 indexed mandateId, address indexed guardian);
+    event EnvelopeSet(uint256 indexed mandateId, bytes32 indexed category, uint256 budget);
+    event HeartbeatPolicySet(uint256 indexed mandateId, uint256 maxSilenceSeconds);
+    event AgentHeartbeat(uint256 indexed mandateId, address indexed agent);
+    event SpendIntentExecuted(uint256 indexed mandateId, address indexed agent, bytes32 digest, uint256 receiptId, address relayer);
 
     // ── View ───────────────────────────────────────────────────────────
     function canSpend(

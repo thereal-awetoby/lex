@@ -35,6 +35,10 @@ Each mandate stores:
 
 `canSpend(mandateId, amount, counterparty, category)` is a free view call that returns whether the rules allow a payment and a reason code. It does not check whether a caller is a bound agent.
 
+Additional controls include per-agent rolling sub-caps, category envelopes, a heartbeat policy, and a pause-only guardian. `canAgentSpend` includes agent binding, sub-cap, and heartbeat; `canSpendBatch` checks each item independently. `canExecuteIntent` checks a signed EIP-712 intent, including its signer, nonce, and deadline. Intents use the `LexMandate` version `1` domain and are bound to the chain and contract. A valid intent consumes its nonce even if policy refuses it.
+
+A category is chosen by the agent, so an envelope cannot prevent a compromised agent from using a different category. Sub-caps, envelopes, lists, tiers, and heartbeat policies are not included in `policyHash` and are not covered by the rules timelock.
+
 ## Exceptions
 
 - **Hard law:** no exceptions.
@@ -77,7 +81,7 @@ scripts/     deploy and exercise scripts
 docs/        threat model, HSP, SDK, receipts, demo, mainnet proofs
 ```
 
-MCP tools: `get_mandate`, `can_pay`, `pay`, `pay_hsp_cart`, `request_exception`, `execute_exception`, `pay_escrow`, `attest_escrow`, `release_escrow`, `get_receipt`, `list_receipts`, `get_exception`, `get_escrow`.
+MCP tools: `get_mandate`, `can_pay`, `can_agent_spend`, `heartbeat`, `pay`, `pay_hsp_cart`, `request_exception`, `execute_exception`, `pay_escrow`, `attest_escrow`, `release_escrow`, `get_receipt`, `list_receipts`, `get_exception`, `get_escrow`.
 
 ## Network
 
@@ -85,7 +89,7 @@ MCP tools: `get_mandate`, `can_pay`, `pay`, `pay_hsp_cart`, `request_exception`,
 |---|---|---|
 | Chain ID | 177 | 133 |
 | RPC | https://mainnet.hsk.xyz | https://testnet.hsk.xyz |
-| Explorer | https://hashkeyscan.io | https://testnet.hashkeyscan.io |
+| Explorer | https://hsk.blockscout.com | https://testnet-explorer.hskchain.net |
 | USDC.e / USDC | `0x054ed45810DbBAb8B27668922D110669c9D88D0a` | `0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6` |
 | USDT | `0xf1b50ed67a9e2cc94ad3c477779e2d4cbfff9029` | `0x372325443233fEbaC1F6998aC750276468c83CC6` |
 

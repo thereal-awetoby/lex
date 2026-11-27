@@ -7,7 +7,7 @@ export const TOKENS = {
   USDT: "0xf1b50ed67a9e2cc94ad3c477779e2d4cbfff9029" as `0x${string}`,
 };
 
-export const EXPLORER_URL = "https://hashkeyscan.io";
+export const EXPLORER_URL = process.env.NEXT_PUBLIC_EXPLORER_URL || "https://hsk.blockscout.com";
 
 // Block the Mandate contract was deployed at. Log queries start here.
 export const DEPLOY_BLOCK = BigInt(process.env.NEXT_PUBLIC_DEPLOY_BLOCK || "0");

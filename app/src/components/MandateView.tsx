@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { useAccount } from "wagmi";
+import { useAccount, useReadContract } from "wagmi";
 import { useMandateRead, useMandateWrite } from "@/hooks/useMandate";
-import { REASON_CODES, ERC20_ABI } from "@lex/sdk";
-import { EXPLORER_URL, TOKENS } from "@/config/contracts";
-import { formatUnits } from "viem";
+import { REASON_CODES, ERC20_ABI, MANDATE_ABI, encodeCategory } from "@lex/sdk";
+import { CONTRACTS, EXPLORER_URL, TOKENS } from "@/config/contracts";
+import { formatUnits, parseUnits, isAddress } from "viem";
 
 const DECISION_LABELS = ["ALLOW", "REFUSE", "EXCEPTION"];
 
@@ -17,13 +17,21 @@ export function MandateView() {
   const { writeContract, mandateAddress, mandateAbi, isPending, isConfirming, isSuccess, hash } =
     useMandateWrite();
 
+  const {data: guardianAddr} = useReadContract({address: CONTRACTS.mandate, abi: MANDATE_ABI, functionName: "guardian", args: mandateId !== undefined ? [mandateId] : undefined, query: {enabled: mandateId !== undefined}});
+  const {data: heartbeatSilence} = useReadContract({address: CONTRACTS.mandate, abi: MANDATE_ABI, functionName: "heartbeatMaxSilence", args: mandateId !== undefined ? [mandateId] : undefined, query: {enabled: mandateId !== undefined}});
+  const [capAgent, setCapAgent] = useState("");
+  const [capValue, setCapValue] = useState("");
+  const [envCategory, setEnvCategory] = useState("compute");
+  const [envBudget, setEnvBudget] = useState("");
+  const [hbSeconds, setHbSeconds] = useState("");
+  const [guardianInput, setGuardianInput] = useState("");
   const [fundAmount, setFundAmount] = useState("");
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [agentAddr, setAgentAddr] = useState("");
   const [revokeAddr, setRevokeAddr] = useState("");
   const [tierAddr, setTierAddr] = useState("");
   const [tierValue, setTierValue] = useState("");
-  const [tab, setTab] = useState<"overview" | "agents" | "fund" | "withdraw" | "exceptions">("overview");
+  const [tab, setTab] = useState<"overview" | "agents" | "limits" | "fund" | "withdraw" | "exceptions">("overview");
 
   const handleLoad = () => {
     if (mandateIdInput) setMandateId(BigInt(mandateIdInput));
@@ -120,7 +128,7 @@ export function MandateView() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b">
-        {(["overview", "agents", "fund", "withdraw", "exceptions"] as const).map((t) => (
+        {(["overview", "agents", "limits", "fund", "withdraw", "exceptions"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -178,6 +186,8 @@ export function MandateView() {
               <span className="text-gray-500">Rule change timelock</span>
               <p>{rules.timelockForRuleChange.toString()}s</p>
             </div>
+            <div><span className="text-gray-500">Heartbeat</span><p>{heartbeatSilence && heartbeatSilence > 0n ? `every ${heartbeatSilence}s` : "off"}</p></div>
+            <div><span className="text-gray-500">Guardian</span><p className="font-mono text-xs break-all">{guardianAddr || "none"}</p></div>
             {(rules.activeWindowStart > 0n || rules.activeWindowEnd > 0n) && (
               <>
                 <div>
@@ -285,6 +295,23 @@ export function MandateView() {
         </div>
       )}
 
+      {tab === "limits" && isOwner && (
+        <div className="space-y-5">
+          <LimitRow label="Agent sub-cap per window (0 = off)" busy={isPending || isConfirming} fields={[
+            {value: capAgent, set: setCapAgent, placeholder: "Agent (0x...)"}, {value: capValue, set: setCapValue, placeholder: "Cap"}
+          ]} onSubmit={() => { if (!isAddress(capAgent) || capValue === "") return; writeContract({address: mandateAddress, abi: mandateAbi, functionName: "setAgentCap", args: [mandateId, capAgent, parseUnits(capValue, 6)]}); }} />
+          <LimitRow label="Category envelope, total budget (0 = remove)" busy={isPending || isConfirming} fields={[
+            {value: envCategory, set: setEnvCategory, placeholder: "Category"}, {value: envBudget, set: setEnvBudget, placeholder: "Budget"}
+          ]} onSubmit={() => { if (!envCategory || new TextEncoder().encode(envCategory).length > 32 || envBudget === "") return; writeContract({address: mandateAddress, abi: mandateAbi, functionName: "setEnvelope", args: [mandateId, encodeCategory(envCategory), parseUnits(envBudget, 6)]}); }} />
+          <LimitRow label="Heartbeat seconds (0 = off)" busy={isPending || isConfirming} fields={[
+            {value: hbSeconds, set: setHbSeconds, placeholder: "Seconds"}
+          ]} onSubmit={() => { if (!/^\d+$/.test(hbSeconds)) return; writeContract({address: mandateAddress, abi: mandateAbi, functionName: "setHeartbeatPolicy", args: [mandateId, BigInt(hbSeconds)]}); }} />
+          <LimitRow label="Guardian (zero address removes it)" busy={isPending || isConfirming} fields={[
+            {value: guardianInput, set: setGuardianInput, placeholder: "Guardian (0x...)"}
+          ]} onSubmit={() => { if (!isAddress(guardianInput)) return; writeContract({address: mandateAddress, abi: mandateAbi, functionName: "setGuardian", args: [mandateId, guardianInput]}); }} />
+        </div>
+      )}
+
       {tab === "fund" && (
         <div className="space-y-3">
           <div className="flex gap-2">
@@ -366,4 +393,8 @@ export function MandateView() {
       )}
     </div>
   );
+}
+
+function LimitRow({label, fields, onSubmit, busy}: {label: string; fields: {value: string; set: (v: string) => void; placeholder: string}[]; onSubmit: () => void; busy: boolean}) {
+  return <div className="space-y-2"><p className="text-sm text-gray-500">{label}</p><div className="flex gap-2">{fields.map(f => <input key={f.placeholder} value={f.value} onChange={e => f.set(e.target.value)} placeholder={f.placeholder} className="min-w-0 flex-1 px-3 py-2 border rounded text-sm"/>)}<button type="button" onClick={onSubmit} disabled={busy} className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50">Set</button></div></div>;
 }

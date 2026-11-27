@@ -77,6 +77,7 @@ export default function ReceiptPage() {
         {r.hspOrderId !== ZERO32 && <Row label="HSP order id (keccak256 of payment request id)" value={r.hspOrderId} mono />}
         {isEscrow && <Row label="Escrow" value={`#${BigInt(r.txRef).toString()}`} />}
         <Row label="Policy hash (rules in force)" value={r.policyHash} mono />
+        <Row label="Agent" value={r.agent} mono />
         <Row label="Token" value={r.token} mono />
         <Row label="Time" value={new Date(Number(r.timestamp) * 1000).toISOString()} />
         <Row label="Transaction">

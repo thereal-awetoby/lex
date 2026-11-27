@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useAccount } from "wagmi";
 import { useMandateWrite } from "@/hooks/useMandate";
-import { TOKENS } from "@/config/contracts";
+import { EXPLORER_URL, TOKENS } from "@/config/contracts";
 import { encodeCategory } from "@lex/sdk";
 
 export function CreateMandate() {
@@ -247,7 +247,7 @@ export function CreateMandate() {
         <p className="text-sm text-green-600">
           Created.{" "}
           <a
-            href={`https://hashkeyscan.io/tx/${hash}`}
+            href={`${EXPLORER_URL}/tx/${hash}`}
             target="_blank"
             rel="noopener"
             className="underline"

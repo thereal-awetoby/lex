@@ -4,7 +4,7 @@
 
 - Chain: HashKey Chain, ID 177
 - RPC: https://mainnet.hsk.xyz
-- Explorer: https://hashkeyscan.io
+- Explorer: https://hsk.blockscout.com
 - Token: USDC.e `0x054ed45810DbBAb8B27668922D110669c9D88D0a` (6 decimals)
 
 ## Deployed contracts
@@ -15,6 +15,16 @@
 | Mandate | | |
 
 Deploy block:
+
+To deploy and verify on Blockscout, from `contracts`:
+
+```bash
+forge script script/Deploy.s.sol --rpc-url https://mainnet.hsk.xyz --broadcast \
+  --verify --verifier blockscout --verifier-url https://hsk.blockscout.com/api/
+# If the child contract is not verified automatically:
+forge verify-contract <MANDATE_ADDRESS> src/Mandate.sol:Mandate --rpc-url https://mainnet.hsk.xyz \
+  --verifier blockscout --verifier-url https://hsk.blockscout.com/api/
+```
 
 ## What the proof run does
 
@@ -27,10 +37,11 @@ Deploy block:
 5. Owner pauses. Agent pays: **REFUSE**, `PAUSED`. Owner unpauses.
 6. Agent tries to lock 1.5 in escrow: **REFUSE**, `OVER_TX_CAP`, nothing locked. Agent locks 0.5 (**ALLOW** receipt), attests delivery, and the escrow is released to the counterparty.
 7. Agent pays a 0.25 HSP Cart Mandate through `payHspCart`: **ALLOW**. The run checks that the receipt carries the HSP order id. The cart is signed by the owner key acting as merchant, and no HSP merchant API call is made.
-8. Creates a governed mandate where exceptions need 1 approval. Funds it with 2. Agent pays 1.5: **REFUSE**, `EXCEPTION_REQUIRED`. Agent requests an exception, the owner approves, and it pays out: **EXCEPTION**.
-9. Owner withdraws what is left in both mandates.
+8. Test an agent sub-cap, a data envelope, and heartbeat refusal and recovery. Sign a 0.2 spend intent, relay it, and check that replay is rejected.
+9. Creates a governed mandate where exceptions need 1 approval. Funds it with 2. Agent pays 1.5: **REFUSE**, `EXCEPTION_REQUIRED`. Agent requests an exception, the owner approves, and it pays out: **EXCEPTION**.
+10. Owner withdraws what is left in both mandates.
 
-The owner key needs 5 USDC.e and HSK for gas. The agent key needs HSK for gas. By default the counterparty is the owner, so paid amounts come back and the run costs gas. A different counterparty receives the payments. If the run stops early, unspent mandate balances may need to be withdrawn separately.
+The owner key needs 5 USDC.e and HSK for gas. The agent key needs HSK for gas. The optional `RELAYER_PRIVATE_KEY` defaults to the owner and needs gas. By default the counterparty is the owner, so paid amounts come back and the run costs gas. A different counterparty receives the payments. If the run stops early, unspent mandate balances may need to be withdrawn separately.
 
 ```bash
 npm install
@@ -52,5 +63,5 @@ The script also supports testnet (chain 133) and local nodes; set `TOKEN_ADDRESS
 ## Verify
 
 - Any receipt: call `getReceipt(id)` on the Mandate contract, or open `/r/:id` in the app.
-- Any transaction: https://hashkeyscan.io.
+- Any transaction: https://hsk.blockscout.com.
 - A mandate's rules and decision history: `/m/:id` in the app, subject to the app's configured deployment block and RPC log availability.

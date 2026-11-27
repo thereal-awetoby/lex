@@ -84,7 +84,7 @@ export default function MandatePublicPage() {
       <p className="text-xs text-gray-400">
         All values are read from the chain.{" "}
         <a href={`${EXPLORER_URL}/address/${owner}`} target="_blank" rel="noopener" className="underline">
-          Owner on HashKey Scan
+          Owner on the explorer
         </a>
       </p>
     </main>

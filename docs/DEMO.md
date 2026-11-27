@@ -47,7 +47,7 @@ NEXT_PUBLIC_MANDATE_ADDRESS=0x... NEXT_PUBLIC_DEPLOY_BLOCK=<block> npm run dev
 1. Connect a wallet on HashKey Chain.
 2. **Create:** set the caps, ceiling, cooldown and minimum tier, and choose hard law or governed. For governed mandates, set the approvers and either the number of approvals or a time delay. Add the agent address, allowlist and denylist. The console shows the transaction link.
 3. **Manage:** load the mandate id, then **Fund**. Funding takes two transactions, approve and fund.
-4. **Agents:** bind or revoke agents, and set counterparty tiers. **Withdraw:** return unspent funds.
+4. **Agents:** bind or revoke agents, and set counterparty tiers. **Limits:** set sub-cap, envelope, heartbeat, and guardian. **Withdraw:** return unspent funds.
 5. **Activity:** every decision, with links to the receipts. **Exceptions:** approve, reject, or execute after a time delay.
 
 ## 3. An agent over MCP
@@ -63,7 +63,8 @@ Add it to an MCP client as a stdio server with the same command and environment.
 
 Things to ask the agent to do:
 
-- Check a payment with `can_pay`
+- Check a payment with `can_pay` or `can_agent_spend` (including agent-specific controls)
+- Send `heartbeat` when required
 - Pay within the limits with `pay`. The result is ALLOW with a receipt id
 - Pay over a cap with `pay`. The result is REFUSE with the reason. The tool marks it as an error so the agent doesn't assume it paid
 - On a governed mandate: `request_exception`, approve it in the console, and call `execute_exception` if the mandate uses a time delay
@@ -77,5 +78,5 @@ For a single payment from the command line, `scripts/agent-pay.mjs` lists its ar
 
 No wallet is needed.
 
-- `/r/:receiptId`: the decision and reason, every field, the transaction on HashKey Scan, and the mandate it belongs to
+- `/r/:receiptId`: the decision and reason, every field, the transaction on the explorer, and the mandate it belongs to
 - `/m/:mandateId`: the rules in plain terms, a payment checker that calls `canSpend`, and every decision the mandate has made
