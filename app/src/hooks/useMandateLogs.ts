@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { usePublicClient } from "wagmi";
 import { parseAbiItem } from "viem";
-import { CONTRACTS, DEPLOY_BLOCK } from "@/config/contracts";
+import { CHAIN_ID, CONTRACTS, DEPLOY_BLOCK } from "@/config/contracts";
 
 const SPEND_DECISION = parseAbiItem(
   "event SpendDecision(uint256 indexed mandateId, uint256 indexed receiptId, uint8 decision, uint16 reasonCode, uint256 amount, address counterparty, bytes32 category)"
@@ -23,7 +23,7 @@ export interface DecisionLog {
 }
 
 export function useMandateLogs(mandateId: bigint | undefined) {
-  const client = usePublicClient();
+  const client = usePublicClient({ chainId: CHAIN_ID });
   const [decisions, setDecisions] = useState<DecisionLog[]>([]);
   const [exceptionIds, setExceptionIds] = useState<bigint[]>([]);
   const [loading, setLoading] = useState(false);

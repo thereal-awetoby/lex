@@ -50,3 +50,44 @@ jobs:
         env:
           NEXT_PUBLIC_MANDATE_ADDRESS: "0x0000000000000000000000000000000000000001"
         run: npm install && npm run build
+
+  e2e:
+    name: proof run on a local chain
+    runs-on: ubuntu-latest
+    env:
+      RPC: http://127.0.0.1:8545
+      DEPLOYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      AGENT_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+      OWNER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install forge-std
+        working-directory: contracts
+        run: git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
+      - name: Start anvil
+        run: |
+          nohup anvil --silent > anvil.log 2>&1 &
+          for i in $(seq 1 30); do cast block-number --rpc-url "$RPC" > /dev/null 2>&1 && break; sleep 1; done
+          cast block-number --rpc-url "$RPC"
+      - name: Deploy Lex and a mock token
+        working-directory: contracts
+        run: |
+          forge script script/Deploy.s.sol --rpc-url "$RPC" --broadcast | tee deploy.log
+          MANDATE=$(grep -oE "Mandate: +0x[0-9a-fA-F]{40}" deploy.log | grep -oE "0x[0-9a-fA-F]{40}")
+          forge create src/mocks/MockERC20.sol:MockERC20 --rpc-url "$RPC" --private-key "$DEPLOYER_PRIVATE_KEY" \
+            --broadcast --constructor-args "USD Coin" USDC 6 | tee token.log
+          TOKEN=$(grep -oE "Deployed to: 0x[0-9a-fA-F]{40}" token.log | grep -oE "0x[0-9a-fA-F]{40}")
+          test -n "$MANDATE" && test -n "$TOKEN"
+          cast send "$TOKEN" "mint(address,uint256)" "$OWNER_ADDRESS" 100000000 --rpc-url "$RPC" --private-key "$DEPLOYER_PRIVATE_KEY"
+          echo "LEX_MANDATE_ADDRESS=$MANDATE" >> "$GITHUB_ENV"
+          echo "TOKEN_ADDRESS=$TOKEN" >> "$GITHUB_ENV"
+      - name: Install
+        run: npm ci
+      - name: Proof run
+        env:
+          HSK_RPC_URL: http://127.0.0.1:8545
+        run: npx tsx scripts/exercise-mainnet.ts

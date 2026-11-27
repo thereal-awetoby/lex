@@ -1,6 +1,7 @@
 "use client";
 
 import { formatUnits } from "viem";
+import { CHAIN_ID } from "@/config/contracts";
 import { useException, useMandateWrite } from "@/hooks/useMandate";
 
 const ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
@@ -40,6 +41,7 @@ function ExceptionRow({ id, canAct, timeDelay }: { id: bigint; canAct: boolean; 
   const act = (functionName: "approveException" | "rejectException" | "executeException") => {
     writeContract(
       {
+        chainId: CHAIN_ID,
         address: mandateAddress,
         abi: mandateAbi,
         functionName,

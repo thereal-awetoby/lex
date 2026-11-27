@@ -72,6 +72,8 @@ Things to ask the agent to do:
 - Pay an HSP cart with `pay_hsp_cart`. This needs `LEX_HSP_MERCHANT_SIGNERS` set to the merchant's signer address
 - Review the history with `list_receipts`
 
+For gasless signed payments, set a dedicated, funded `RELAYER_PRIVATE_KEY` in the app and `LEX_RELAYER_URL=https://<app>/api/relay` for MCP, then use `pay_via_relayer`. `GET /api/relay` reports configuration. The endpoint is unauthenticated: use an infrastructure rate limit and a small gas balance. The agent still needs gas for heartbeats when enabled.
+
 For a single payment from the command line, `scripts/agent-pay.mjs` lists its arguments at the top of the file.
 
 ## 4. Public pages

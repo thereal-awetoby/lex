@@ -1,7 +1,7 @@
 "use client";
 
 import { injected, useAccount, useConnect, useDisconnect, useSwitchChain } from "wagmi";
-import { hskMainnet, hskTestnet } from "@/config/wagmi";
+import { APP_CHAIN } from "@/config/wagmi";
 
 export function ConnectWallet() {
   const { address, isConnected, chain } = useAccount();
@@ -20,16 +20,16 @@ export function ConnectWallet() {
     );
   }
 
-  const isHsk = chain?.id === hskMainnet.id || chain?.id === hskTestnet.id;
+  const isHsk = chain?.id === APP_CHAIN.id;
 
   return (
     <div className="flex items-center gap-3 text-sm">
       {!isHsk && (
         <button
-          onClick={() => switchChain({ chainId: hskMainnet.id })}
+          onClick={() => switchChain({ chainId: APP_CHAIN.id })}
           className="px-3 py-1 bg-blue-600 text-white rounded text-xs"
         >
-          Switch to HSK
+          Switch to {APP_CHAIN.name}
         </button>
       )}
       <span className="text-gray-500">

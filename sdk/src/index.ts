@@ -121,6 +121,40 @@ export interface CreateMandateParams {
   approvers?: `0x${string}`[];
 }
 
+/** Result from a relayer. `relayed` means a transaction was submitted; `paid` reflects its actual decision. */
+export interface RelayResult {
+  relayed: boolean;
+  paid: boolean;
+  agent?: `0x${string}`;
+  receiptId?: bigint;
+  txHash?: `0x${string}`;
+  decision?: string;
+  reasonCode?: number;
+  reason?: string;
+  error?: string;
+}
+
+export async function relaySpendIntent(relayerUrl: string, intent: SpendIntent, signature: `0x${string}`): Promise<RelayResult> {
+  const res = await fetch(relayerUrl, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({intent: {
+      mandateId: intent.mandateId.toString(), amount: intent.amount.toString(), counterparty: intent.counterparty,
+      category: intent.category, ref: intent.ref, hspOrderId: intent.hspOrderId,
+      nonce: intent.nonce.toString(), deadline: intent.deadline.toString(),
+    }, signature}),
+  });
+  let body: any;
+  try { body = await res.json(); } catch { body = { error: `Relayer returned HTTP ${res.status}` }; }
+  return {
+    relayed: body?.relayed === true,
+    paid: res.ok && body?.paid === true && body?.relayed === true,
+    agent: body?.agent,
+    receiptId: typeof body?.receiptId === "string" && /^\d+$/.test(body.receiptId) ? BigInt(body.receiptId) : undefined,
+    txHash: body?.txHash, decision: body?.decision, reasonCode: body?.reasonCode, reason: body?.reason,
+    error: body?.error ?? (res.ok ? undefined : `HTTP ${res.status}`),
+  };
+}
+
 // ── SDK ────────────────────────────────────────────────────────────────
 
 export interface LexConfig {
@@ -660,6 +694,19 @@ export class Lex {
   }
   setAgentCap(mandateId: bigint, agent: `0x${string}`, cap: bigint) { return this.write("setAgentCap", [mandateId, agent, cap]); }
   heartbeat(mandateId: bigint) { return this.write("heartbeat", [mandateId]); }
+  /** Check in immediately and periodically. Stop with the returned function. */
+  startHeartbeat(mandateId: bigint, intervalMs: number, onError?: (e: unknown) => void): () => void {
+    if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) throw new Error("intervalMs must be a positive integer");
+    let busy = false;
+    const beat = async () => {
+      if (busy) return;
+      busy = true;
+      try { await this.heartbeat(mandateId); } catch (e) { onError?.(e); } finally { busy = false; }
+    };
+    void beat();
+    const timer = setInterval(beat, intervalMs);
+    return () => clearInterval(timer);
+  }
   setHeartbeatPolicy(mandateId: bigint, seconds: bigint) { return this.write("setHeartbeatPolicy", [mandateId, seconds]); }
   setGuardian(mandateId: bigint, guardian: `0x${string}`) { return this.write("setGuardian", [mandateId, guardian]); }
   setEnvelope(mandateId: bigint, category: `0x${string}`, budget: bigint) { return this.write("setEnvelope", [mandateId, category, budget]); }

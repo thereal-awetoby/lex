@@ -2,111 +2,18 @@
 
 ## Actors
 
-| Actor | Trust Level | Keys |
-|-------|------------|------|
-| Owner | High — sets rules, funds mandates | EOA or multisig |
-| Agent | Bounded — can only spend within mandate rules | Hot key, rotatable |
-| Counterparty | Untrusted — receives funds | Any address |
-| Approver | Medium — can approve exceptions in governed mode | EOA |
+The owner controls rules, funding, withdrawal, lists, agent bindings and direct limits. Agents have scoped payment powers and can sign intents. Approvers can approve or reject exceptions and pause; a guardian can pause. A relayer can submit a signed intent and pay gas. Counterparties receive funds and can release an attested escrow.
 
-## Attack Surface
+## Threats and limitations
 
-### 1. Agent Key Compromise
+- **Compromised agent:** caps, allowlists, tiers, the denylist, and pause/revoke limit damage. A compromised key can still pay within its limits and send heartbeats. Monitor decisions and use separate agent keys.
+- **Exceptions:** governed exceptions may override soft limits. Paused status, denylist, ceiling, envelope, agent binding, sub-cap, heartbeat and balance are checked at execution. Hard law has no exception path.
+- **Signed intents:** the signature binds the payment, chain, contract, nonce and deadline. A relayer can choose when to submit before expiry. A valid refusal consumes the nonce; use short deadlines. An intent left unsubmitted during revocation may become usable again if the same key is rebound before expiry.
+- **App relayer gas:** the endpoint is unauthenticated, has no built-in rate limit and accepts any mandate unless `RELAY_MANDATE_IDS` restricts it. A bound agent can submit many valid small payments and drain the sponsor's gas. Protect it with external authentication/rate limits where appropriate, restrict mandates and use a dedicated key with a small balance. A dry run is not a guarantee: state may change before mining, causing a paid-for refusal or revert. Clients must verify the mined decision and transaction.
+- **Category labels:** the agent selects the category and can choose another to evade an envelope. Use counterparties, per-agent and total limits as independent controls.
+- **Owner compromise:** the owner can withdraw funds and change lists and direct limits; the rule-change timelock does not protect these actions. Use an appropriate multisig and monitor updates.
+- **Escrow:** the owner or any bound agent can attest delivery; a counterparty that also holds either role can attest its own escrow. A refund is available only after timeout. Escrow release does not recheck a denylist added after lock. Refunded locks still count against window limits and agent caps.
+- **Token behavior:** accounting assumes the requested token amount is transferred. Fee-on-transfer, rebasing or callback-capable tokens can break assumptions. Effects before interactions are not a general reentrancy defense. Use only appropriate tokens and seek an independent security review.
+- **Public pages:** agent and envelope lists depend on complete event history from the configured deploy block and RPC log availability; they are not authoritative if logs are missing. Receipt and mandate IDs are unique only within the contract deployment.
 
-**Threat:** Attacker obtains agent private key.
-
-**Mitigations:**
-- Per-tx cap limits single-transaction damage
-- Rolling window cap limits damage over time
-- Absolute ceiling is the hard upper bound — cannot be exceeded even through exceptions
-- Denylist blocks known-bad addresses regardless of agent intent
-- Cooldown prevents rapid-fire drain
-- Owner can `revokeAgent` immediately
-- `rotateAgent` atomically swaps to a new key
-
-**Residual risk:** Attacker can spend up to rolling cap before owner notices. Active monitoring recommended.
-
-### 2. Rule Bypass via Exception
-
-**Threat:** Agent requests exception to circumvent caps.
-
-**Mitigations:**
-- HARD_LAW mandates have no exception path at all
-- GOVERNED mandates require N-of-M approver signatures or time-delay
-- Exceptions cannot override denylist (denylisted counterparties always refuse)
-- Exceptions cannot exceed absolute ceiling
-- Every exception is logged on-chain with full audit trail
-
-### 3. Denylist Circumvention
-
-**Threat:** Agent sends funds to a denylisted address through an intermediary.
-
-**Mitigations:**
-- On-chain denylist enforced at the contract level — no code path bypasses it
-- Even governed exceptions cannot override denylist
-- Counterparty tier requirements can restrict to known addresses only
-- Allowlist mode (requireAllowlist) limits to explicitly approved counterparties
-
-**Residual risk:** Intermediary addresses not on denylist. Owner must maintain lists proactively.
-
-### 4. Malicious Rule Change
-
-**Threat:** Compromised owner key changes rules to remove caps.
-
-**Mitigations:**
-- `timelockForRuleChange` on rule changes — agents and observers see proposed changes before they activate
-- Owner can cancel pending rule changes
-- All rule changes emit events for off-chain monitoring
-- Approvers can be required for rule execution
-
-### 5. Token Drain via Escrow
-
-**Threat:** Attacker locks funds in escrow and never completes.
-
-**Mitigations:**
-- Escrow has timeout — refund returns funds to mandate balance after deadline
-- Owner can force refund at any time
-- Escrow creation runs the same canSpend checks as direct spend
-- Escrow funds are tracked separately from available balance
-
-### 6. Front-running / MEV
-
-**Threat:** Validator reorders transactions to extract value.
-
-**Mitigations:**
-- Spend transactions go to known counterparties, not AMMs — limited MEV opportunity
-- Rolling window and cooldown make rapid exploitation harder
-- HSK Chain uses a validator set with known operators
-
-### 7. Reentrancy
-
-**Threat:** Malicious token or counterparty contract reenters during transfer.
-
-**Mitigations:**
-- State updates (balance, counters, receipt) happen before token transfer (checks-effects-interactions)
-- ERC20 transfers are the last operation in spend and escrow release
-
-## Invariants
-
-1. **No spend without receipt.** Every call to `spend()` produces a Receipt — ALLOW or REFUSE.
-2. **Denylist is absolute.** No code path (spend, exception, escrow) transfers tokens to a denylisted address.
-3. **Absolute ceiling holds.** Total spent by a mandate never exceeds `absoluteCeiling`, even through exceptions.
-4. **Agent scope.** Only bound agents can call `spend()`. Only the owner can bind/revoke agents.
-5. **Balance integrity.** `mandate.balance + sum(escrow.locked) + sum(transferred) == sum(funded)`.
-
-## Recommendations
-
-- Use HARD_LAW for autonomous agents in production
-- Set `timelockForRuleChange` > 0 for any mandate with significant funds
-- Monitor `SpendDecision` events off-chain for anomaly detection
-- Rotate agent keys periodically via `rotateAgent`
-- Keep denylist updated with known-bad addresses
-- Use allowlist mode for high-value mandates
-
-## Agent limits and signed intents
-
-A per-agent sub-cap bounds that key's spending per window; category envelopes track a total budget when enabled. A guardian may pause but not unpause. Heartbeats stop an unresponsive agent, but do not protect against a compromised key that continues to check in.
-
-Intents bind the payment fields, chain, contract, nonce and deadline. Anyone can submit one. A relayer can choose when to submit it, including when policy will refuse it; the refusal consumes the nonce. Short deadlines limit this risk.
-
-Categories are selected by the agent; a compromised agent can choose another category to avoid a category envelope. Directly configured limits, lists and tiers are outside `policyHash` and the rules timelock. Fee-on-transfer, rebasing or callback-capable tokens can break accounting assumptions; checks-effects-interactions alone is not a general reentrancy defense. A counterparty that is also an owner or bound agent can attest its own escrow.
+The code is not represented as audited or production-ready.

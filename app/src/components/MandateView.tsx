@@ -4,8 +4,9 @@ import { useState } from "react";
 import { useAccount, useReadContract } from "wagmi";
 import { useMandateRead, useMandateWrite } from "@/hooks/useMandate";
 import { REASON_CODES, ERC20_ABI, MANDATE_ABI, encodeCategory } from "@lex/sdk";
-import { CONTRACTS, EXPLORER_URL, TOKENS } from "@/config/contracts";
+import { CHAIN_ID, CONTRACTS, EXPLORER_URL, TOKENS } from "@/config/contracts";
 import { formatUnits, parseUnits, isAddress } from "viem";
+import { LimitsSummary } from "./LimitsSummary";
 
 const DECISION_LABELS = ["ALLOW", "REFUSE", "EXCEPTION"];
 
@@ -17,8 +18,8 @@ export function MandateView() {
   const { writeContract, mandateAddress, mandateAbi, isPending, isConfirming, isSuccess, hash } =
     useMandateWrite();
 
-  const {data: guardianAddr} = useReadContract({address: CONTRACTS.mandate, abi: MANDATE_ABI, functionName: "guardian", args: mandateId !== undefined ? [mandateId] : undefined, query: {enabled: mandateId !== undefined}});
-  const {data: heartbeatSilence} = useReadContract({address: CONTRACTS.mandate, abi: MANDATE_ABI, functionName: "heartbeatMaxSilence", args: mandateId !== undefined ? [mandateId] : undefined, query: {enabled: mandateId !== undefined}});
+  const {data: guardianAddr} = useReadContract({address: CONTRACTS.mandate, abi: MANDATE_ABI, chainId: CHAIN_ID, functionName: "guardian", args: mandateId !== undefined ? [mandateId] : undefined, query: {enabled: mandateId !== undefined}});
+  const {data: heartbeatSilence} = useReadContract({address: CONTRACTS.mandate, abi: MANDATE_ABI, chainId: CHAIN_ID, functionName: "heartbeatMaxSilence", args: mandateId !== undefined ? [mandateId] : undefined, query: {enabled: mandateId !== undefined}});
   const [capAgent, setCapAgent] = useState("");
   const [capValue, setCapValue] = useState("");
   const [envCategory, setEnvCategory] = useState("compute");
@@ -66,7 +67,7 @@ export function MandateView() {
     const amount = BigInt(Math.floor(Number(fundAmount) * 1e6));
 
     // Approve first
-    writeContract({
+    writeContract({ chainId: CHAIN_ID,
       address: token,
       abi: ERC20_ABI,
       functionName: "approve",
@@ -75,7 +76,7 @@ export function MandateView() {
 
     // Then fund (user will need to confirm second tx after first)
     setTimeout(() => {
-      writeContract({
+      writeContract({ chainId: CHAIN_ID,
         address: mandateAddress,
         abi: mandateAbi,
         functionName: "fund",
@@ -86,7 +87,7 @@ export function MandateView() {
 
   const handleBindAgent = () => {
     if (!agentAddr || !mandateId) return;
-    writeContract({
+    writeContract({ chainId: CHAIN_ID,
       address: mandateAddress,
       abi: mandateAbi,
       functionName: "bindAgent",
@@ -96,7 +97,7 @@ export function MandateView() {
 
   const handlePause = () => {
     if (!mandateId) return;
-    writeContract({
+    writeContract({ chainId: CHAIN_ID,
       address: mandateAddress,
       abi: mandateAbi,
       functionName: paused ? "unpause" : "pause",
@@ -251,7 +252,7 @@ export function MandateView() {
               <button
                 onClick={() => {
                   if (!tierAddr || tierValue === "" || !mandateId) return;
-                  writeContract({
+                  writeContract({ chainId: CHAIN_ID,
                     address: mandateAddress,
                     abi: mandateAbi,
                     functionName: "setCounterpartyTier",
@@ -278,7 +279,7 @@ export function MandateView() {
               <button
                 onClick={() => {
                   if (!revokeAddr || !mandateId) return;
-                  writeContract({
+                  writeContract({ chainId: CHAIN_ID,
                     address: mandateAddress,
                     abi: mandateAbi,
                     functionName: "revokeAgent",
@@ -295,20 +296,23 @@ export function MandateView() {
         </div>
       )}
 
-      {tab === "limits" && isOwner && (
-        <div className="space-y-5">
+      {tab === "limits" && (
+        <div className="space-y-6">
+          <LimitsSummary mandateId={mandateId} refreshKey={isSuccess ? hash : undefined} />
+          {isOwner && <div className="space-y-5">
           <LimitRow label="Agent sub-cap per window (0 = off)" busy={isPending || isConfirming} fields={[
             {value: capAgent, set: setCapAgent, placeholder: "Agent (0x...)"}, {value: capValue, set: setCapValue, placeholder: "Cap"}
-          ]} onSubmit={() => { if (!isAddress(capAgent) || capValue === "") return; writeContract({address: mandateAddress, abi: mandateAbi, functionName: "setAgentCap", args: [mandateId, capAgent, parseUnits(capValue, 6)]}); }} />
+          ]} onSubmit={() => { if (!isAddress(capAgent) || capValue === "") return; writeContract({ chainId: CHAIN_ID,address: mandateAddress, abi: mandateAbi, functionName: "setAgentCap", args: [mandateId, capAgent, parseUnits(capValue, 6)]}); }} />
           <LimitRow label="Category envelope, total budget (0 = remove)" busy={isPending || isConfirming} fields={[
             {value: envCategory, set: setEnvCategory, placeholder: "Category"}, {value: envBudget, set: setEnvBudget, placeholder: "Budget"}
-          ]} onSubmit={() => { if (!envCategory || new TextEncoder().encode(envCategory).length > 32 || envBudget === "") return; writeContract({address: mandateAddress, abi: mandateAbi, functionName: "setEnvelope", args: [mandateId, encodeCategory(envCategory), parseUnits(envBudget, 6)]}); }} />
+          ]} onSubmit={() => { if (!envCategory || new TextEncoder().encode(envCategory).length > 32 || envBudget === "") return; writeContract({ chainId: CHAIN_ID,address: mandateAddress, abi: mandateAbi, functionName: "setEnvelope", args: [mandateId, encodeCategory(envCategory), parseUnits(envBudget, 6)]}); }} />
           <LimitRow label="Heartbeat seconds (0 = off)" busy={isPending || isConfirming} fields={[
             {value: hbSeconds, set: setHbSeconds, placeholder: "Seconds"}
-          ]} onSubmit={() => { if (!/^\d+$/.test(hbSeconds)) return; writeContract({address: mandateAddress, abi: mandateAbi, functionName: "setHeartbeatPolicy", args: [mandateId, BigInt(hbSeconds)]}); }} />
+          ]} onSubmit={() => { if (!/^\d+$/.test(hbSeconds)) return; writeContract({ chainId: CHAIN_ID,address: mandateAddress, abi: mandateAbi, functionName: "setHeartbeatPolicy", args: [mandateId, BigInt(hbSeconds)]}); }} />
           <LimitRow label="Guardian (zero address removes it)" busy={isPending || isConfirming} fields={[
             {value: guardianInput, set: setGuardianInput, placeholder: "Guardian (0x...)"}
-          ]} onSubmit={() => { if (!isAddress(guardianInput)) return; writeContract({address: mandateAddress, abi: mandateAbi, functionName: "setGuardian", args: [mandateId, guardianInput]}); }} />
+          ]} onSubmit={() => { if (!isAddress(guardianInput)) return; writeContract({ chainId: CHAIN_ID,address: mandateAddress, abi: mandateAbi, functionName: "setGuardian", args: [mandateId, guardianInput]}); }} />
+          </div>}
         </div>
       )}
 
@@ -353,7 +357,7 @@ export function MandateView() {
               onClick={() => {
                 if (!withdrawAmount || !mandateId) return;
                 const amount = BigInt(Math.floor(Number(withdrawAmount) * 1e6));
-                writeContract({
+                writeContract({ chainId: CHAIN_ID,
                   address: mandateAddress,
                   abi: mandateAbi,
                   functionName: "withdraw",

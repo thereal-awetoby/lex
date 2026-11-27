@@ -4,10 +4,10 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { usePublicClient } from "wagmi";
-import { formatUnits, hexToString, parseAbiItem } from "viem";
-import { REASON_CODES } from "@lex/sdk";
+import { formatUnits, hexToString, parseAbiItem, parseEventLogs } from "viem";
+import { MANDATE_ABI, REASON_CODES } from "@lex/sdk";
 import { useReceipt } from "@/hooks/useMandate";
-import { CONTRACTS, DEPLOY_BLOCK, EXPLORER_URL } from "@/config/contracts";
+import { CHAIN_ID, CONTRACTS, DEPLOY_BLOCK, EXPLORER_URL } from "@/config/contracts";
 
 const DECISION_LABELS = ["ALLOW", "REFUSE", "EXCEPTION"];
 const DECISION_COLORS: Record<string, string> = {
@@ -26,11 +26,13 @@ export default function ReceiptPage() {
   const raw = params.receiptId as string | undefined;
   const receiptId = raw && /^\d+$/.test(raw) ? BigInt(raw) : undefined;
   const { data, isLoading } = useReceipt(receiptId);
-  const client = usePublicClient();
+  const client = usePublicClient({chainId: CHAIN_ID});
   const [txHash, setTxHash] = useState<`0x${string}`>();
 
   // The receipt struct has no tx hash; find the transaction from the indexed event
   useEffect(() => {
+    let active = true;
+    setTxHash(undefined);
     if (!client || receiptId === undefined || !CONTRACTS.mandate) return;
     client
       .getLogs({
@@ -39,9 +41,25 @@ export default function ReceiptPage() {
         args: { receiptId },
         fromBlock: DEPLOY_BLOCK,
       })
-      .then((logs) => setTxHash(logs[0]?.transactionHash ?? undefined))
+      .then((logs) => { if (active) setTxHash(logs[0]?.transactionHash ?? undefined); })
       .catch(() => {});
+    return () => { active = false; };
   }, [client, receiptId]);
+
+  const [relayer, setRelayer] = useState<`0x${string}`>();
+  useEffect(() => {
+    let active = true;
+    setRelayer(undefined);
+    if (client && txHash && receiptId !== undefined) {
+      client.getTransactionReceipt({hash: txHash}).then((tx) => {
+        const logs = tx.logs.filter(l => l.address.toLowerCase() === CONTRACTS.mandate.toLowerCase());
+        const events = parseEventLogs({abi: MANDATE_ABI, logs, eventName: "SpendIntentExecuted"});
+        const matching = events.find(e => e.args.receiptId === receiptId);
+        if (active) setRelayer(matching?.args.relayer);
+      }).catch(() => {});
+    }
+    return () => { active = false; };
+  }, [client, txHash, receiptId]);
 
   if (receiptId === undefined) return <Message text="Invalid receipt id" />;
   if (isLoading) return <Message text="Loading receipt..." />;
@@ -80,6 +98,7 @@ export default function ReceiptPage() {
         <Row label="Agent" value={r.agent} mono />
         <Row label="Token" value={r.token} mono />
         <Row label="Time" value={new Date(Number(r.timestamp) * 1000).toISOString()} />
+        {relayer && <Row label="Submitted by relayer" value={relayer} mono />}
         <Row label="Transaction">
           {txHash ? (
             <a href={`${EXPLORER_URL}/tx/${txHash}`} target="_blank" rel="noopener" className="underline font-mono text-xs break-all">
