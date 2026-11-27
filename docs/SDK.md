@@ -38,6 +38,11 @@ lex.connect(
 |--------|---------|
 | `getMandate(mandateId)` | `{ owner, paused, token, balance, policyHash, rules }` |
 | `canSpend(mandateId, amount, counterparty, category)` | `{ ok, reasonCode, reason }`. A free view call that sends nothing |
+| `canAgentSpend(mandateId, agent, amount, counterparty, category)` | Checks agent binding, heartbeat and sub-cap as well as mandate rules |
+| `canSpendBatch(mandateId, items)` | Checks each item independently against current state |
+| `getAgentCap(mandateId, agent)`, `getEnvelope(mandateId, category)` | Current cap/spend or envelope budget/spend/remaining |
+| `getHeartbeat(mandateId, agent)`, `getGuardian(mandateId)` | Heartbeat status and guardian |
+| `getPendingRuleChange(mandateId)` | Pending flag, effective time and rules |
 | `getReceipt(receiptId)` | The receipt (see [RECEIPTS.md](RECEIPTS.md)) |
 | `getException(exceptionId)` | amount, counterparty, category, reason, createdAt, approvalCount, resolved, approved |
 | `getEscrow(escrowId)` | amount, token, counterparty, ref, state, lockedAt, timeout |
@@ -60,6 +65,10 @@ For the two log queries, pass the contract's deploy block as `fromBlock` rather 
 | `setDenylisted(mandateId, addr, denied)` | |
 | `setCounterpartyTier(mandateId, counterparty, tier)` | Payments need `tier >= rules.minCounterpartyTier` |
 | `addApprover(mandateId, approver)`, `removeApprover(mandateId, approver)` | |
+| `setAgentCap(mandateId, agent, cap)` | Agent window sub-cap, 0 disables |
+| `setEnvelope(mandateId, category, budget)` | Category total budget, 0 removes |
+| `setHeartbeatPolicy(mandateId, seconds)` | 0 disables |
+| `setGuardian(mandateId, guardian)` | Guardian may pause |
 | `proposeRules(mandateId, rules)` | Applies at once if `timelockForRuleChange` is 0, otherwise queues the change |
 | `executeRuleChange(mandateId)` | Applies a queued change once the timelock has passed |
 | `cancelRuleChange(mandateId)` | Drops a queued change |
@@ -77,6 +86,12 @@ For the two log queries, pass the contract's deploy block as `fromBlock` rather 
 | `refundEscrow(escrowId)` | After the timeout, if not attested. Anyone; funds return to the mandate |
 | `requestException(mandateId, amount, counterparty, category, reason)` | Governed mandates only. Returns `{ exceptionId, txHash }` |
 | `executeException(exceptionId, hspOrderId?)` | Once the time delay has passed and there is at least one approval. Owner, approver or agent |
+
+## Spend intents
+
+`buildSpendIntent` uses the connected agent wallet's next nonce and a default ten-minute deadline. `signSpendIntent` signs the EIP-712 data without a transaction. A relayer uses `canExecuteIntent` and `executeSpendIntent`; the latter returns `{ receiptId, txHash }`. A valid refusal consumes the nonce; an invalid or expired intent reverts. `getIntentNonce` reads the next nonce. The signing type is exported as `SPEND_INTENT_TYPES`.
+
+An agent checks in via `heartbeat(mandateId)`.
 
 ## Approver
 

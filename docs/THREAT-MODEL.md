@@ -102,3 +102,11 @@
 - Rotate agent keys periodically via `rotateAgent`
 - Keep denylist updated with known-bad addresses
 - Use allowlist mode for high-value mandates
+
+## Agent limits and signed intents
+
+A per-agent sub-cap bounds that key's spending per window; category envelopes track a total budget when enabled. A guardian may pause but not unpause. Heartbeats stop an unresponsive agent, but do not protect against a compromised key that continues to check in.
+
+Intents bind the payment fields, chain, contract, nonce and deadline. Anyone can submit one. A relayer can choose when to submit it, including when policy will refuse it; the refusal consumes the nonce. Short deadlines limit this risk.
+
+Categories are selected by the agent; a compromised agent can choose another category to avoid a category envelope. Directly configured limits, lists and tiers are outside `policyHash` and the rules timelock. Fee-on-transfer, rebasing or callback-capable tokens can break accounting assumptions; checks-effects-interactions alone is not a general reentrancy defense. A counterparty that is also an owner or bound agent can attest its own escrow.

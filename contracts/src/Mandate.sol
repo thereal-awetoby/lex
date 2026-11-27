@@ -25,28 +25,28 @@ contract Mandate is IMandate {
     uint256 public nextExceptionId = 1;
     uint256 public nextEscrowId = 1;
 
-    mapping(uint256 => MandateData) public mandates;
-    mapping(uint256 => mapping(address => bool)) public boundAgents;
-    mapping(uint256 => mapping(address => bool)) public allowlist;
-    mapping(uint256 => mapping(address => bool)) public denylist;
-    mapping(uint256 => bool) public allowlistEnabled;
+    mapping(uint256 => MandateData) internal mandates;
+    mapping(uint256 => mapping(address => bool)) internal boundAgents;
+    mapping(uint256 => mapping(address => bool)) internal allowlist;
+    mapping(uint256 => mapping(address => bool)) internal denylist;
+    mapping(uint256 => bool) internal allowlistEnabled;
     mapping(uint256 => mapping(address => uint256)) public counterpartyTier; // mandateId => counterparty => tier
-    mapping(uint256 => mapping(address => uint256)) public counterpartySpent;
-    mapping(uint256 => mapping(bytes32 => uint256)) public categorySpent;
-    mapping(uint256 => mapping(address => uint256)) public counterpartyLastReset;
-    mapping(uint256 => mapping(bytes32 => uint256)) public categoryLastReset;
+    mapping(uint256 => mapping(address => uint256)) internal counterpartySpent;
+    mapping(uint256 => mapping(bytes32 => uint256)) internal categorySpent;
+    mapping(uint256 => mapping(address => uint256)) internal counterpartyLastReset;
+    mapping(uint256 => mapping(bytes32 => uint256)) internal categoryLastReset;
 
     // Exception tracking
-    mapping(uint256 => ExceptionRequest) public exceptions;
+    mapping(uint256 => ExceptionRequest) internal exceptions;
     mapping(uint256 => mapping(address => bool)) public approvers; // mandateId => approver => bool
-    mapping(uint256 => uint256) public approverCount;
-    mapping(uint256 => mapping(uint256 => mapping(address => bool))) public exceptionApprovals; // mandateId => exceptionId => approver => voted
+    mapping(uint256 => uint256) internal approverCount;
+    mapping(uint256 => mapping(uint256 => mapping(address => bool))) internal exceptionApprovals; // mandateId => exceptionId => approver => voted
 
     // Receipt storage
-    mapping(uint256 => Receipt) public receipts;
+    mapping(uint256 => Receipt) internal receipts;
 
     // Escrow storage
-    mapping(uint256 => EscrowLeg) public escrows;
+    mapping(uint256 => EscrowLeg) internal escrows;
 
     // Pending rule changes (for timelock)
     struct PendingRuleChange {
@@ -54,7 +54,20 @@ contract Mandate is IMandate {
         uint256 effectiveAt;
         bool pending;
     }
-    mapping(uint256 => PendingRuleChange) public pendingRuleChanges;
+    mapping(uint256 => PendingRuleChange) internal pendingRuleChanges;
+
+    mapping(uint256 => mapping(address => uint256)) internal agentCap;
+    mapping(uint256 => mapping(address => uint256)) internal agentSpent;
+    mapping(uint256 => mapping(address => uint256)) internal agentLastReset;
+    mapping(uint256 => mapping(bytes32 => uint256)) internal envelopeBudget;
+    mapping(uint256 => mapping(bytes32 => uint256)) internal envelopeSpent;
+    mapping(uint256 => uint256) public heartbeatMaxSilence;
+    mapping(uint256 => mapping(address => uint256)) public lastHeartbeat;
+    mapping(uint256 => address) public guardian;
+    bytes32 public constant SPEND_INTENT_TYPEHASH = keccak256("SpendIntent(uint256 mandateId,uint256 amount,address counterparty,bytes32 category,bytes32 ref,bytes32 hspOrderId,uint256 nonce,uint256 deadline)");
+    bytes32 private constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    mapping(address => uint256) public intentNonces;
+    mapping(bytes32 => bool) public usedIntents;
 
     // ── Modifiers ──────────────────────────────────────────────────────
     modifier onlyOwner(uint256 mandateId) {
@@ -145,9 +158,36 @@ contract Mandate is IMandate {
     }
 
     function rotateAgent(uint256 mandateId, address oldAgent, address newAgent) external onlyOwner(mandateId) {
+        require(boundAgents[mandateId][oldAgent], "NOT_AGENT");
+        require(!boundAgents[mandateId][newAgent], "ALREADY_BOUND");
         boundAgents[mandateId][oldAgent] = false;
         boundAgents[mandateId][newAgent] = true;
+        agentCap[mandateId][newAgent] = agentCap[mandateId][oldAgent];
+        agentSpent[mandateId][newAgent] = agentSpent[mandateId][oldAgent];
+        agentLastReset[mandateId][newAgent] = agentLastReset[mandateId][oldAgent];
+        delete agentCap[mandateId][oldAgent];
+        delete agentSpent[mandateId][oldAgent];
+        delete agentLastReset[mandateId][oldAgent];
+        delete lastHeartbeat[mandateId][newAgent];
         emit AgentRotated(mandateId, oldAgent, newAgent);
+    }
+
+    function setAgentCap(uint256 id, address agent, uint256 cap) external onlyOwner(id) {
+        agentCap[id][agent] = cap; emit AgentCapSet(id, agent, cap);
+    }
+    function heartbeat(uint256 id) external onlyAgent(id) {
+        lastHeartbeat[id][msg.sender] = block.timestamp; emit AgentHeartbeat(id, msg.sender);
+    }
+    function setHeartbeatPolicy(uint256 id, uint256 seconds_) external onlyOwner(id) {
+        heartbeatMaxSilence[id] = seconds_; emit HeartbeatPolicySet(id, seconds_);
+    }
+    function setGuardian(uint256 id, address newGuardian) external onlyOwner(id) {
+        guardian[id] = newGuardian; emit GuardianSet(id, newGuardian);
+    }
+    function setEnvelope(uint256 id, bytes32 category, uint256 budget) external onlyOwner(id) {
+        envelopeBudget[id][category] = budget;
+        if (budget == 0) envelopeSpent[id][category] = 0;
+        emit EnvelopeSet(id, category, budget);
     }
 
     // ── Allowlist / Denylist ───────────────────────────────────────────
@@ -196,6 +236,7 @@ contract Mandate is IMandate {
                 effectiveAt: block.timestamp + timelock,
                 pending: true
             });
+            emit RuleChangeQueued(mandateId, _computePolicyHash(mandateId, newRules), block.timestamp + timelock);
         }
     }
 
@@ -208,7 +249,9 @@ contract Mandate is IMandate {
     }
 
     function cancelRuleChange(uint256 mandateId) external onlyOwner(mandateId) {
+        require(pendingRuleChanges[mandateId].pending, "NO_PENDING");
         pendingRuleChanges[mandateId].pending = false;
+        emit RuleChangeCancelled(mandateId);
     }
 
     function _applyRules(uint256 mandateId, Rules memory newRules) internal {
@@ -218,7 +261,8 @@ contract Mandate is IMandate {
     }
 
     // ── Pause / Unpause ────────────────────────────────────────────────
-    function pause(uint256 mandateId) external onlyOwnerOrApprover(mandateId) {
+    function pause(uint256 mandateId) external {
+        require(msg.sender == mandates[mandateId].owner || approvers[mandateId][msg.sender] || msg.sender == guardian[mandateId], "NOT_AUTHORIZED");
         mandates[mandateId].paused = true;
         emit MandatePaused(mandateId);
     }
@@ -255,6 +299,9 @@ contract Mandate is IMandate {
         // A payment above the ceiling cannot be made via an exception.
         if (m.rules.absoluteCeiling > 0 && amount > m.rules.absoluteCeiling)
             return (false, 12); // OVER_ABSOLUTE_CEILING
+
+        uint256 budget = envelopeBudget[mandateId][category];
+        if (budget > 0 && envelopeSpent[mandateId][category] + amount > budget) return (false, 16);
 
         if (m.rules.perTxCap > 0 && amount > m.rules.perTxCap)
             return (false, 2); // OVER_TX_CAP
@@ -326,6 +373,35 @@ contract Mandate is IMandate {
         return (true, 0); // OK
     }
 
+    function _agentCheck(uint256 id, address agent, uint256 amount) internal view returns (uint16) {
+        uint256 maxSilence = heartbeatMaxSilence[id];
+        if (maxSilence > 0 && (lastHeartbeat[id][agent] == 0 || block.timestamp > lastHeartbeat[id][agent] + maxSilence)) return 17;
+        uint256 cap = agentCap[id][agent];
+        if (cap > 0 && _agentSpentInWindow(id, agent) + amount > cap) return 15;
+        return 0;
+    }
+    function _agentSpentInWindow(uint256 id, address agent) internal view returns (uint256) {
+        uint256 window = mandates[id].rules.rollingWindowDuration;
+        if (window == 0) window = 86400;
+        return block.timestamp >= agentLastReset[id][agent] + window ? 0 : agentSpent[id][agent];
+    }
+    function _checkAgentSpend(uint256 id, address agent, uint256 amount, address cp, bytes32 category) internal view returns (bool, uint16) {
+        (bool ok, uint16 reason) = _checkSpend(id, amount, cp, category);
+        if (!ok && (reason == 1 || reason == 5 || reason == 12 || reason == 16)) return (false, reason);
+        uint16 agentReason = _agentCheck(id, agent, amount);
+        if (agentReason != 0) return (false, agentReason);
+        return (ok, reason);
+    }
+    function canAgentSpend(uint256 id, address agent, uint256 amount, address cp, bytes32 category) external view returns (bool, uint16) {
+        if (!boundAgents[id][agent]) return (false, 13);
+        return _checkAgentSpend(id, agent, amount, cp, category);
+    }
+    function canSpendBatch(uint256 id, uint256[] calldata amounts, address[] calldata cps, bytes32[] calldata cats) external view returns (bool[] memory ok, uint16[] memory reasons) {
+        uint256 n = amounts.length; require(cps.length == n && cats.length == n, "LENGTH_MISMATCH");
+        ok = new bool[](n); reasons = new uint16[](n);
+        for (uint256 i; i < n; i++) (ok[i], reasons[i]) = _checkSpend(id, amounts[i], cps[i], cats[i]);
+    }
+
     // ── Spend (agent only) ─────────────────────────────────────────────
     function spend(
         uint256 mandateId,
@@ -335,30 +411,36 @@ contract Mandate is IMandate {
         bytes32 ref,
         bytes32 hspOrderId
     ) external onlyAgent(mandateId) returns (uint256 receiptId) {
-        // No notPaused modifier: a paused mandate still records a REFUSE receipt (code 1)
-        (bool ok, uint16 reasonCode) = _checkSpend(mandateId, amount, counterparty, category);
+        return _decide(mandateId, msg.sender, amount, counterparty, category, ref, hspOrderId);
+    }
+
+    function _decide(uint256 mandateId, address agent, uint256 amount, address counterparty, bytes32 category, bytes32 ref, bytes32 hspOrderId) internal returns (uint256 receiptId) {
+        (bool ok, uint16 reasonCode) = _checkAgentSpend(mandateId, agent, amount, counterparty, category);
 
         MandateData storage m = mandates[mandateId];
         receiptId = nextReceiptId++;
 
         if (!ok) {
             // Paused, denylisted, over absolute ceiling and insufficient funds are never exceptionable
-            bool exceptionable = reasonCode != 1 && reasonCode != 5 && reasonCode != 12 && reasonCode != 14;
+            bool exceptionable = reasonCode == 2 || reasonCode == 3 || reasonCode == 4 || reasonCode == 6 || reasonCode == 7 || reasonCode == 8 || reasonCode == 10 || reasonCode == 11;
             if (m.rules.exceptionMode == ExceptionMode.GOVERNED && exceptionable) {
                 _emitRefuseReceipt(mandateId, receiptId, 9, amount, counterparty, category, ref);
+                receipts[receiptId].agent = agent;
                 return receiptId;
             }
             _emitRefuseReceipt(mandateId, receiptId, reasonCode, amount, counterparty, category, ref);
+            receipts[receiptId].agent = agent;
             return receiptId;
         }
 
         // Execute spend
-        _executeSpend(mandateId, receiptId, amount, counterparty, category, ref, hspOrderId, 0);
+        _executeSpend(mandateId, agent, receiptId, amount, counterparty, category, ref, hspOrderId, 0);
         return receiptId;
     }
 
     function _executeSpend(
         uint256 mandateId,
+        address agent,
         uint256 receiptId,
         uint256 amount,
         address counterparty,
@@ -369,12 +451,13 @@ contract Mandate is IMandate {
     ) internal {
         MandateData storage m = mandates[mandateId];
 
-        _trackSpend(mandateId, amount, counterparty, category);
+        _trackSpend(mandateId, agent, amount, counterparty, category);
         m.balance -= amount;
 
         Decision decision = exceptionId > 0 ? Decision.EXCEPTION : Decision.ALLOW;
         _writeReceipt(mandateId, receiptId, decision, 0, amount, counterparty, category, ref, exceptionId, hspOrderId, bytes32(0));
 
+        receipts[receiptId].agent = agent;
         // Effects are done; interaction last
         _safeTransfer(m.token, counterparty, amount);
 
@@ -385,7 +468,7 @@ contract Mandate is IMandate {
     }
 
     /// @dev Updates rolling, counterparty, category and cooldown tracking. Used by spend and escrow.
-    function _trackSpend(uint256 mandateId, uint256 amount, address counterparty, bytes32 category) internal {
+    function _trackSpend(uint256 mandateId, address agent, uint256 amount, address counterparty, bytes32 category) internal {
         MandateData storage m = mandates[mandateId];
 
         // Update rolling window
@@ -415,6 +498,11 @@ contract Mandate is IMandate {
             categorySpent[mandateId][category] += amount;
         }
 
+        if (block.timestamp >= agentLastReset[mandateId][agent] + windowDuration) {
+            agentLastReset[mandateId][agent] = block.timestamp;
+            agentSpent[mandateId][agent] = amount;
+        } else agentSpent[mandateId][agent] += amount;
+        if (envelopeBudget[mandateId][category] > 0) envelopeSpent[mandateId][category] += amount;
         m.lastSpendTime = block.timestamp;
     }
 
@@ -432,22 +520,21 @@ contract Mandate is IMandate {
         bytes32 txRef
     ) internal {
         MandateData storage m = mandates[mandateId];
-        receipts[receiptId] = Receipt({
-            receiptId: receiptId,
-            mandateId: mandateId,
-            policyHash: m.policyHash,
-            decision: decision,
-            reasonCode: reasonCode,
-            amount: amount,
-            token: m.token,
-            counterparty: counterparty,
-            category: category,
-            ref: ref,
-            exceptionId: exceptionId,
-            hspOrderId: hspOrderId,
-            txRef: txRef,
-            timestamp: block.timestamp
-        });
+        Receipt storage r = receipts[receiptId];
+        r.receiptId = receiptId;
+        r.mandateId = mandateId;
+        r.policyHash = m.policyHash;
+        r.decision = decision;
+        r.reasonCode = reasonCode;
+        r.amount = amount;
+        r.token = m.token;
+        r.counterparty = counterparty;
+        r.category = category;
+        r.ref = ref;
+        r.exceptionId = exceptionId;
+        r.hspOrderId = hspOrderId;
+        r.txRef = txRef;
+        r.timestamp = block.timestamp;
     }
 
     /// @dev Handles tokens that return no bool (USDT-style) and reverts on failure.
@@ -496,6 +583,7 @@ contract Mandate is IMandate {
             require(amount <= m.rules.absoluteCeiling, "OVER_ABSOLUTE_CEILING");
         }
 
+        _requireOverridable(mandateId, msg.sender, amount, counterparty, category);
         exceptionId = nextExceptionId++;
         exceptions[exceptionId] = ExceptionRequest({
             exceptionId: exceptionId,
@@ -507,10 +595,22 @@ contract Mandate is IMandate {
             createdAt: block.timestamp,
             approvalCount: 0,
             resolved: false,
-            approved: false
+            approved: false,
+            agent: msg.sender
         });
 
         emit ExceptionRequested(mandateId, exceptionId, amount, counterparty);
+    }
+
+    function _requireOverridable(uint256 id, address agent, uint256 amount, address cp, bytes32 category) internal view {
+        require(!denylist[id][cp], "DENYLISTED_NO_EXCEPTION");
+        uint256 ceiling = mandates[id].rules.absoluteCeiling;
+        require(ceiling == 0 || amount <= ceiling, "OVER_ABSOLUTE_CEILING");
+        uint256 budget = envelopeBudget[id][category];
+        require(budget == 0 || envelopeSpent[id][category] + amount <= budget, "ENVELOPE_EXCEEDED");
+        uint16 code = _agentCheck(id, agent, amount);
+        require(code != 17, "AGENT_HEARTBEAT_STALE");
+        require(code != 15, "OVER_AGENT_CAP");
     }
 
     function approveException(
@@ -589,12 +689,14 @@ contract Mandate is IMandate {
         if (m.rules.absoluteCeiling > 0) {
             require(e.amount <= m.rules.absoluteCeiling, "OVER_ABSOLUTE_CEILING");
         }
+        require(boundAgents[e.mandateId][e.agent], "AGENT_NOT_BOUND");
+        _requireOverridable(e.mandateId, e.agent, e.amount, e.counterparty, e.category);
         require(e.amount <= m.balance, "INSUFFICIENT_FUNDS");
 
         e.resolved = true;
         e.approved = true;
         receiptId = nextReceiptId++;
-        _executeSpend(e.mandateId, receiptId, e.amount, e.counterparty, e.category, bytes32(0), hspOrderId, exceptionId);
+        _executeSpend(e.mandateId, e.agent, receiptId, e.amount, e.counterparty, e.category, bytes32(0), hspOrderId, exceptionId);
     }
 
     function rejectException(uint256 exceptionId) external {
@@ -626,9 +728,11 @@ contract Mandate is IMandate {
         require(timeout > 0, "TIMEOUT_REQUIRED");
         bytes32 category = bytes32("escrow");
         // Refusals, including pause, write a receipt and lock nothing.
-        (bool ok, uint16 reasonCode) = _checkSpend(mandateId, amount, counterparty, category);
+        (bool ok, uint16 reasonCode) = _checkAgentSpend(mandateId, msg.sender, amount, counterparty, category);
         if (!ok) {
-            _emitRefuseReceipt(mandateId, nextReceiptId++, reasonCode, amount, counterparty, category, ref);
+            uint256 refusedReceipt = nextReceiptId++;
+            _emitRefuseReceipt(mandateId, refusedReceipt, reasonCode, amount, counterparty, category, ref);
+            receipts[refusedReceipt].agent = msg.sender;
             return 0;
         }
 
@@ -636,7 +740,7 @@ contract Mandate is IMandate {
         escrowId = nextEscrowId++;
 
         // Escrow counts against every limit exactly like a direct spend
-        _trackSpend(mandateId, amount, counterparty, category);
+        _trackSpend(mandateId, msg.sender, amount, counterparty, category);
         m.balance -= amount;
 
         escrows[escrowId] = EscrowLeg({
@@ -657,6 +761,7 @@ contract Mandate is IMandate {
         _writeReceipt(
             mandateId, receiptId, Decision.ALLOW, 0, amount, counterparty, category, ref, 0, bytes32(0), bytes32(escrowId)
         );
+        receipts[receiptId].agent = msg.sender;
         emit SpendDecision(mandateId, receiptId, Decision.ALLOW, 0, amount, counterparty, category);
         emit EscrowLocked(mandateId, escrowId, amount);
     }
@@ -745,6 +850,75 @@ contract Mandate is IMandate {
 
     function isDenylisted(uint256 mandateId, address addr) external view returns (bool) {
         return denylist[mandateId][addr];
+    }
+
+    function getPendingRuleChange(uint256 id) external view returns (bool pending, uint256 effectiveAt, Rules memory newRules) {
+        PendingRuleChange storage p = pendingRuleChanges[id]; return (p.pending, p.effectiveAt, p.newRules);
+    }
+    function getAgentCap(uint256 id, address agent) external view returns (uint256 cap, uint256 spentInWindow) {
+        return (agentCap[id][agent], _agentSpentInWindow(id, agent));
+    }
+    function getEnvelope(uint256 id, bytes32 category) external view returns (uint256 budget, uint256 spent) {
+        return (envelopeBudget[id][category], envelopeSpent[id][category]);
+    }
+    function envelopeRemaining(uint256 id, bytes32 category) external view returns (uint256) {
+        uint256 budget = envelopeBudget[id][category]; uint256 spent = envelopeSpent[id][category];
+        return budget == 0 ? type(uint256).max : spent >= budget ? 0 : budget - spent;
+    }
+    function reasonCodeString(uint16 code) external pure returns (string memory) {
+        if (code == 0) return "OK";
+        if (code == 1) return "PAUSED";
+        if (code == 2) return "OVER_TX_CAP";
+        if (code == 3) return "OVER_ROLLING";
+        if (code == 4) return "NOT_ALLOWLISTED";
+        if (code == 5) return "DENYLISTED";
+        if (code == 6) return "TIER_TOO_LOW";
+        if (code == 7) return "COOLDOWN";
+        if (code == 8) return "WINDOW_CLOSED";
+        if (code == 9) return "EXCEPTION_REQUIRED";
+        if (code == 10) return "OVER_COUNTERPARTY_CAP";
+        if (code == 11) return "OVER_CATEGORY_CAP";
+        if (code == 12) return "OVER_ABSOLUTE_CEILING";
+        if (code == 13) return "AGENT_NOT_BOUND";
+        if (code == 14) return "INSUFFICIENT_FUNDS";
+        if (code == 15) return "OVER_AGENT_CAP";
+        if (code == 16) return "ENVELOPE_EXCEEDED";
+        if (code == 17) return "AGENT_HEARTBEAT_STALE";
+        if (code == 18) return "INTENT_EXPIRED";
+        if (code == 19) return "INTENT_USED";
+        return "UNKNOWN";
+    }
+
+    function domainSeparator() public view returns (bytes32) {
+        return keccak256(abi.encode(DOMAIN_TYPEHASH, keccak256("LexMandate"), keccak256("1"), block.chainid, address(this)));
+    }
+    function hashSpendIntent(SpendIntent calldata intent) public view returns (bytes32) {
+        bytes32 sh = keccak256(abi.encode(SPEND_INTENT_TYPEHASH, intent.mandateId, intent.amount, intent.counterparty, intent.category, intent.ref, intent.hspOrderId, intent.nonce, intent.deadline));
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator(), sh));
+    }
+    function _recover(bytes32 digest, bytes calldata sig) internal pure returns (address) {
+        if (sig.length != 65) return address(0);
+        bytes32 r = bytes32(sig[0:32]); bytes32 ss = bytes32(sig[32:64]); uint8 v = uint8(sig[64]);
+        if (uint256(ss) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) return address(0);
+        if (v < 27) v += 27;
+        if (v != 27 && v != 28) return address(0);
+        return ecrecover(digest, v, r, ss);
+    }
+    function canExecuteIntent(SpendIntent calldata intent, bytes calldata sig) external view returns (bool ok, uint16 reasonCode, address agent) {
+        bytes32 digest = hashSpendIntent(intent); agent = _recover(digest, sig);
+        if (agent == address(0) || !boundAgents[intent.mandateId][agent]) return (false, 13, agent);
+        if (usedIntents[digest] || intent.nonce != intentNonces[agent]) return (false, 19, agent);
+        if (block.timestamp > intent.deadline) return (false, 18, agent);
+        (ok, reasonCode) = _checkAgentSpend(intent.mandateId, agent, intent.amount, intent.counterparty, intent.category);
+    }
+    function executeSpendIntent(SpendIntent calldata intent, bytes calldata sig) external returns (uint256 receiptId) {
+        bytes32 digest = hashSpendIntent(intent); address agent = _recover(digest, sig);
+        require(agent != address(0) && boundAgents[intent.mandateId][agent], "NOT_AGENT");
+        require(!usedIntents[digest] && intent.nonce == intentNonces[agent], "INTENT_USED");
+        require(block.timestamp <= intent.deadline, "INTENT_EXPIRED");
+        usedIntents[digest] = true; intentNonces[agent] = intent.nonce + 1;
+        receiptId = _decide(intent.mandateId, agent, intent.amount, intent.counterparty, intent.category, intent.ref, intent.hspOrderId);
+        emit SpendIntentExecuted(intent.mandateId, agent, digest, receiptId, msg.sender);
     }
 
     // ── Internal ───────────────────────────────────────────────────────

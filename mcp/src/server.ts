@@ -11,6 +11,7 @@ import { privateKeyToAccount } from "viem/accounts";
 const MANDATE_ADDRESS = process.env.LEX_MANDATE_ADDRESS as `0x${string}`;
 const RPC_URL = process.env.HSK_RPC_URL || "https://mainnet.hsk.xyz";
 const AGENT_KEY = process.env.LEX_AGENT_PRIVATE_KEY as `0x${string}` | undefined;
+const AGENT_ADDRESS = AGENT_KEY ? privateKeyToAccount(AGENT_KEY).address : undefined;
 
 // Trusted HSP merchant signers. A cart is only paid if its signature recovers to one of these.
 // The agent can pick which one applies, but cannot add new ones: the cart (and anything it
@@ -52,6 +53,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ["mandateId"],
       },
+    },
+    {
+      name: "can_agent_spend",
+      description: "Check an agent's binding, mandate rules, sub-cap and heartbeat without sending a transaction.",
+      inputSchema: { type: "object" as const, properties: {
+        mandateId: {type: "string"}, amount: {type: "string"}, counterparty: {type: "string"},
+        category: {type: "string"}, agent: {type: "string", description: "Defaults to the server agent"},
+      }, required: ["mandateId", "amount", "counterparty", "category"] },
+    },
+    {
+      name: "heartbeat", description: "Send an agent heartbeat for a mandate.",
+      inputSchema: { type: "object" as const, properties: { mandateId: {type: "string"} }, required: ["mandateId"] },
     },
     {
       name: "can_pay",
@@ -220,6 +233,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_mandate": {
         const info = await lex.getMandate(BigInt(args!.mandateId as string));
         return { content: [{ type: "text", text: JSON.stringify(info, replacer, 2) }] };
+      }
+
+      case "can_agent_spend": {
+        const agent = ((args!.agent as string) || AGENT_ADDRESS) as `0x${string}` | undefined;
+        if (!agent) return {content: [{type: "text", text: "No agent address: pass agent or set LEX_AGENT_PRIVATE_KEY"}], isError: true};
+        const result = await lex.canAgentSpend(BigInt(args!.mandateId as string), agent, BigInt(args!.amount as string), args!.counterparty as `0x${string}`, encodeCategory(args!.category as string));
+        return {content: [{type: "text", text: JSON.stringify({agent, ...result}, null, 2)}]};
+      }
+      case "heartbeat": {
+        const txHash = await lex.heartbeat(BigInt(args!.mandateId as string));
+        return {content: [{type: "text", text: JSON.stringify({txHash}, null, 2)}]};
       }
 
       case "can_pay": {

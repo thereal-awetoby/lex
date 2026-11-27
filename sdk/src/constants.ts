@@ -4,7 +4,7 @@ export const HSK_MAINNET = {
   id: 177,
   name: "HashKey Chain",
   rpcUrl: "https://mainnet.hsk.xyz",
-  explorerUrl: "https://hashkeyscan.io",
+  explorerUrl: "https://hsk.blockscout.com",
   tokens: {
     USDC_E: "0x054ed45810DbBAb8B27668922D110669c9D88D0a" as `0x${string}`,
     USDT: "0xf1b50ed67a9e2cc94ad3c477779e2d4cbfff9029" as `0x${string}`,
@@ -15,7 +15,7 @@ export const HSK_TESTNET = {
   id: 133,
   name: "HashKey Chain Testnet",
   rpcUrl: "https://testnet.hsk.xyz",
-  explorerUrl: "https://testnet.hashkeyscan.io",
+  explorerUrl: "https://testnet-explorer.hskchain.net",
   tokens: {
     USDC_E: "0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6" as `0x${string}`,
     USDT: "0x372325443233fEbaC1F6998aC750276468c83CC6" as `0x${string}`,
@@ -38,7 +38,14 @@ export const REASON_CODES: Record<number, string> = {
   12: "OVER_ABSOLUTE_CEILING",
   13: "AGENT_NOT_BOUND",
   14: "INSUFFICIENT_FUNDS",
+  15: "OVER_AGENT_CAP",
+  16: "ENVELOPE_EXCEEDED",
+  17: "AGENT_HEARTBEAT_STALE",
+  18: "INTENT_EXPIRED",
+  19: "INTENT_USED",
 };
+
+export const EXCEPTIONABLE_CODES: readonly number[] = [2, 3, 4, 6, 7, 8, 10, 11];
 
 export const CATEGORIES = {
   COMPUTE: encodeCategory("compute"),
